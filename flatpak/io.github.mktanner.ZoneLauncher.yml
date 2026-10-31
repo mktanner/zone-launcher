@@ -1,4 +1,4 @@
-id: io.github.marcust.ZoneLauncher
+id: io.github.mktanner.ZoneLauncher
 runtime: org.gnome.Platform
 runtime-version: '51'
 sdk: org.gnome.Sdk

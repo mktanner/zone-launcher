@@ -41,14 +41,14 @@ Needs `flatpak` with Flathub set up.
 ```bash
 flatpak install --user flathub org.flatpak.Builder org.gnome.Sdk//51
 flatpak run org.flatpak.Builder --user --force-clean --install-deps-from=flathub \
-    --repo=repo --install build-dir flatpak/io.github.marcust.ZoneLauncher.yml
-flatpak run io.github.marcust.ZoneLauncher
+    --repo=repo --install build-dir flatpak/io.github.mktanner.ZoneLauncher.yml
+flatpak run io.github.mktanner.ZoneLauncher
 ```
 
 To make a single-file bundle to share:
 
 ```bash
-flatpak build-bundle repo zone-launcher.flatpak io.github.marcust.ZoneLauncher
+flatpak build-bundle repo zone-launcher.flatpak io.github.mktanner.ZoneLauncher
 ```
 
 The engine is pinned to an OpenXRay `dev` commit in the manifest. To update it, change `commit:`

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <component type="desktop-application">
-  <id>io.github.marcust.ZoneLauncher</id>
+  <id>io.github.mktanner.ZoneLauncher</id>
   <name>Zone Launcher</name>
   <summary>Run the S.T.A.L.K.E.R. trilogy natively with OpenXRay</summary>
   <metadata_license>CC0-1.0</metadata_license>
@@ -16,7 +16,7 @@
       You need to own the games; no game files are included.
     </p>
   </description>
-  <launchable type="desktop-id">io.github.marcust.ZoneLauncher.desktop</launchable>
+  <launchable type="desktop-id">io.github.mktanner.ZoneLauncher.desktop</launchable>
   <content_rating type="oars-1.1">
     <content_attribute id="violence-realistic">intense</content_attribute>
   </content_rating>

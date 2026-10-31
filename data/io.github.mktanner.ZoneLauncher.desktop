@@ -2,7 +2,7 @@
 Name=Zone Launcher
 Comment=Play S.T.A.L.K.E.R. Shadow of Chernobyl, Clear Sky and Call of Pripyat with OpenXRay
 Exec=zone-launcher
-Icon=io.github.marcust.ZoneLauncher
+Icon=io.github.mktanner.ZoneLauncher
 Terminal=false
 Type=Application
 Categories=Game;ActionGame;

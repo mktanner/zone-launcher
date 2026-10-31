@@ -1,2 +1,2 @@
-APP_ID = "io.github.marcust.ZoneLauncher"
+APP_ID = "io.github.mktanner.ZoneLauncher"
 VERSION = "0.1.0"
