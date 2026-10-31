@@ -148,6 +148,21 @@ class FixTests(TempCase):
             install.path.chmod(0o755)
 
 
+class EngineEnvironmentTests(unittest.TestCase):
+    def test_appimage_variables_are_undone(self):
+        env = {
+            "HOME": "/home/u",
+            "LD_LIBRARY_PATH": "/tmp/.mount_x/usr/lib:/opt/lib",
+            "ZONE_LAUNCHER_ORIG_LD_LIBRARY_PATH": "/opt/lib",
+            "PYTHONHOME": "/tmp/.mount_x/usr",
+            "ZONE_LAUNCHER_SET_VARS": "LD_LIBRARY_PATH PYTHONHOME",
+        }
+        self.assertEqual(engine.engine_environment(env), {"HOME": "/home/u", "LD_LIBRARY_PATH": "/opt/lib"})
+
+    def test_outside_the_appimage_nothing_changes(self):
+        self.assertEqual(engine.engine_environment({"PATH": "/usr/bin"}), {"PATH": "/usr/bin"})
+
+
 class CrashSummaryTests(unittest.TestCase):
     def test_real_clear_sky_crash(self):
         summary = engine.crash_summary((FIXTURES / "cs_missing_language_crash.log").read_text())

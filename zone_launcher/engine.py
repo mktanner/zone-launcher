@@ -26,7 +26,9 @@ class Engine:
 
 
 def find_engine(override: str | None = None) -> Engine | None:
-    candidates = [override, "/app/bin/xr_3da", shutil.which("xr_3da"), "/usr/games/xr_3da"]
+    # ZONE_LAUNCHER_ENGINE is set by the AppImage to its bundled engine.
+    candidates = [override, os.environ.get("ZONE_LAUNCHER_ENGINE"), "/app/bin/xr_3da",
+                  shutil.which("xr_3da"), "/usr/games/xr_3da"]
     for candidate in filter(None, candidates):
         binary = Path(candidate)
         if not (binary.is_file() and os.access(binary, os.X_OK)):
@@ -38,11 +40,29 @@ def find_engine(override: str | None = None) -> Engine | None:
     return None
 
 
+def engine_environment(env: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment for the engine: without the AppImage's Python/GTK settings.
+
+    The AppImage's AppRun lists the variables it set in ZONE_LAUNCHER_SET_VARS and saves any value
+    they had before as ZONE_LAUNCHER_ORIG_<name>. The engine finds its own bundled libraries
+    through its RUNPATH; inheriting LD_LIBRARY_PATH could make the host's GL driver load the
+    launcher's older copies of libraries it shares with them.
+    """
+    env = dict(os.environ if env is None else env)
+    for name in env.pop("ZONE_LAUNCHER_SET_VARS", "").split():
+        original = env.pop(f"ZONE_LAUNCHER_ORIG_{name}", None)
+        if original is None:
+            env.pop(name, None)
+        else:
+            env[name] = original
+    return env
+
+
 def launch(engine: Engine, install: Install, extra_args: list[str] | None = None) -> subprocess.Popen:
     flag = GAMES[install.game].engine_flag
     args = [str(engine.binary), *([flag] if flag else []), *(extra_args or [])]
     # With fsgame.ltx in the working directory, OpenXRay treats that folder as the game root.
-    return subprocess.Popen(args, cwd=install.path, stdin=subprocess.DEVNULL)
+    return subprocess.Popen(args, cwd=install.path, stdin=subprocess.DEVNULL, env=engine_environment())
 
 
 def latest_log(install: Install) -> Path | None:

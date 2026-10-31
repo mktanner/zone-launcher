@@ -1,0 +1,39 @@
+#!/bin/bash
+# AppImage entry point: run the launcher with the bundled Python and GTK, and point it at the
+# bundled engine. Every variable changed here is recorded (ZONE_LAUNCHER_SET_VARS, with old values
+# in ZONE_LAUNCHER_ORIG_<name>) so the launcher can undo them before starting the engine.
+HERE="$(dirname "$(readlink -f "$0")")"
+
+declare -A before
+for name in $(compgen -e); do before[$name]="${!name}"; done
+
+for hook in "$HERE"/apprun-hooks/*.sh; do
+    [ -e "$hook" ] && . "$hook"
+done
+# The GTK plugin forces X11 and a fixed light theme as workarounds for GTK 3 apps. GTK 4 and
+# libadwaita handle Wayland and dark mode themselves, so keep whatever the user had.
+for name in GDK_BACKEND GTK_THEME; do
+    if [ -n "${before[$name]+set}" ]; then export "$name=${before[$name]}"; else unset "$name"; fi
+done
+export PYTHONHOME="$HERE/usr"
+export PYTHONPATH="$HERE/usr/lib/python3/dist-packages"
+export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
+export GI_TYPELIB_PATH="$HERE/usr/lib/x86_64-linux-gnu/girepository-1.0"
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+# Software rendering for the launcher window keeps GTK from loading the host's GL driver next to
+# our bundled libraries. The game itself renders with the host driver as usual.
+export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+export ZONE_LAUNCHER_ENGINE="$HERE/usr/bin/xr_3da"
+
+set_vars=""
+for name in $(compgen -e); do
+    if [ -z "${before[$name]+set}" ]; then
+        set_vars+=" $name"
+    elif [ "${before[$name]}" != "${!name}" ]; then
+        set_vars+=" $name"
+        export "ZONE_LAUNCHER_ORIG_$name=${before[$name]}"
+    fi
+done
+export ZONE_LAUNCHER_SET_VARS="$set_vars"
+
+exec "$HERE/usr/bin/python3" "$HERE/usr/bin/zone-launcher" "$@"

@@ -4,3 +4,5 @@ repo/
 __pycache__/
 *.flatpak
 test-builds/
+.appimage-build/
+dist/

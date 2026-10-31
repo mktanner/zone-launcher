@@ -59,6 +59,25 @@ own Flatpak manifest does). Built that way, Clear Sky's opening cutscene leaves 
 the player under the terrain at the start of a new game. Unity alone and `-O2` alone were both
 tested and work.
 
+## AppImage
+
+The same launcher and engine as a single file, for systems without Flatpak:
+
+```bash
+./appimage/build.sh
+```
+
+This builds everything inside an Ubuntu 24.04 Docker container (the engine from the same pinned
+commit and patches as the Flatpak), and writes `dist/Zone_Launcher-x86_64.AppImage`. It runs on
+distros with glibc 2.39 or newer (roughly anything from 2024 on). It bundles Python, GTK 4,
+libadwaita and the engine's libraries, and uses the system's graphics driver, C++ runtime and the
+usual desktop base libraries (X11/Wayland, ALSA, fontconfig, FreeType, HarfBuzz, FriBidi), which
+AppImages leave out on purpose. Settings live in `~/.config/zone-launcher/`, separate from the
+Flatpak's.
+
+The AppImage and the Flatpak can both be used on one machine: each re-links the game folders'
+OpenGL shaders to its own engine when you press Play.
+
 ## Engine patches
 
 Fixes not yet in upstream OpenXRay live in `patches/openxray/` and are applied by the manifest:
