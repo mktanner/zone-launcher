@@ -1,0 +1,75 @@
+id: io.github.marcust.ZoneLauncher
+runtime: org.gnome.Platform
+runtime-version: '51'
+sdk: org.gnome.Sdk
+command: zone-launcher
+finish-args:
+  - --share=ipc
+  # Multiplayer and the engine's server browser.
+  - --share=network
+  - --socket=wayland
+  - --socket=fallback-x11
+  - --socket=pulseaudio
+  # GPU, plus gamepads (SDL reads /dev/input).
+  - --device=all
+  # Game folders can be anywhere: home, other drives, or Heroic/Steam libraries.
+  - --filesystem=home
+  - --filesystem=/run/media
+  - --filesystem=/media
+  - --filesystem=/mnt
+  # Flatpak Heroic keeps GOG's extra files (like Clear Sky's language pack) in its own folder.
+  - --filesystem=~/.var/app/com.heroicgameslauncher.hgl/config/heroic:ro
+  - --filesystem=~/.var/app/com.valvesoftware.Steam/.local/share/Steam
+
+modules:
+  - name: openxray
+    buildsystem: cmake-ninja
+    builddir: true
+    # Build it the way a normal Linux build does: no unity build and none of Flatpak's
+    # default C/C++ flags. With those, Clear Sky's opening cutscene put the camera
+    # (and the player) under the terrain.
+    build-options:
+      cflags: ''
+      cflags-override: true
+      cxxflags: ''
+      cxxflags-override: true
+    config-opts:
+      - -DCMAKE_BUILD_TYPE=ReleaseMasterGold
+    sources:
+      - type: git
+        url: https://github.com/OpenXRay/xray-16.git
+        # The dev commit known to work on AMD (includes the GLSL "#endif missing" fix).
+        commit: c62d9d343981d50f6ed176412b85d94c61b578b5
+      # Linux fixes not yet upstream.
+      - type: patch
+        path: ../patches/openxray/0001-unload-level-when-window-closed.patch
+      - type: patch
+        path: ../patches/openxray/0002-keep-missing-error-dialogs-in-place.patch
+      - type: patch
+        path: ../patches/openxray/0003-skip-secondary-task-panel-when-missing.patch
+      - type: patch
+        path: ../patches/openxray/0004-detect-debugger-without-ptrace-traceme.patch
+      - type: patch
+        path: ../patches/openxray/0005-fix-uninitialized-memory-and-enum-ub.patch
+    cleanup:
+      # The launcher replaces OpenXRay's per-game desktop entries.
+      - /share/applications
+      - /share/bash-completion
+      - /share/pixmaps
+
+  - name: zone-launcher
+    buildsystem: simple
+    build-commands:
+      - install -Dm755 bin/zone-launcher /app/bin/zone-launcher
+      - mkdir -p /app/share/zone-launcher
+      - cp -r zone_launcher /app/share/zone-launcher/
+      - install -Dm644 data/${FLATPAK_ID}.desktop -t /app/share/applications
+      - install -Dm644 data/${FLATPAK_ID}.metainfo.xml -t /app/share/metainfo
+      - install -Dm644 data/${FLATPAK_ID}.svg -t /app/share/icons/hicolor/scalable/apps
+    sources:
+      - type: dir
+        path: ..
+        skip:
+          - .flatpak-builder
+          - build-dir
+          - repo

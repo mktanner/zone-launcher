@@ -1,0 +1,26 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>io.github.marcust.ZoneLauncher</id>
+  <name>Zone Launcher</name>
+  <summary>Run the S.T.A.L.K.E.R. trilogy natively with OpenXRay</summary>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-proprietary</project_license>
+  <description>
+    <p>
+      Zone Launcher finds your copies of Shadow of Chernobyl, Clear Sky and Call of Pripyat
+      (from GOG via Heroic, Steam, or any folder) and runs them with the OpenXRay engine.
+    </p>
+    <p>
+      Before each launch it checks the game folder and fixes common problems, such as the
+      missing English language pack that stops Clear Sky from starting a new game.
+      You need to own the games; no game files are included.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.marcust.ZoneLauncher.desktop</launchable>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-realistic">intense</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="0.1.0" date="2026-10-31"/>
+  </releases>
+</component>

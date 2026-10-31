@@ -1,0 +1,42 @@
+From: Zone Launcher
+Subject: [PATCH] Detect a debugger on Linux without PTRACE_TRACEME
+
+xrDebug::DebuggerIsPresent() probed with ptrace(PTRACE_TRACEME), which
+makes the parent process (shell, desktop session, launcher) the tracer.
+The following PTRACE_DETACH is a tracer-only request, so it fails and the
+game stays traced for good: the next signal it receives puts it into a
+tracing stop that the parent never resumes. ImGui init calls this on every
+start, so games launched from a terminal or the desktop could freeze in
+state "t" (OpenXRay issue #2143). Inside a Flatpak, ptrace is blocked, the
+probe fails, and the engine wrongly believes a debugger is attached.
+
+Read TracerPid from /proc/self/status instead.
+
+---
+diff --git a/src/xrCore/xrDebug.cpp b/src/xrCore/xrDebug.cpp
+index 1edcda8f2..4f103725a 100644
+--- a/src/xrCore/xrDebug.cpp
++++ b/src/xrCore/xrDebug.cpp
+@@ -477,6 +477,22 @@ bool xrDebug::DebuggerIsPresent()
+ {
+ #ifdef XR_PLATFORM_WINDOWS
+     return IsDebuggerPresent();
++#elif defined(XR_PLATFORM_LINUX)
++    // Don't probe with PTRACE_TRACEME: it makes our parent (shell, desktop, launcher) the
++    // tracer, the tracee can't detach itself, and the next signal leaves the game stopped
++    // for good. Inside a Flatpak, ptrace is blocked and the probe reports a debugger instead.
++    FILE* status = fopen("/proc/self/status", "r");
++    if (!status)
++        return false;
++    int tracerPid = 0;
++    char line[256];
++    while (fgets(line, sizeof(line), status))
++    {
++        if (sscanf(line, "TracerPid: %d", &tracerPid) == 1)
++            break;
++    }
++    fclose(status);
++    return tracerPid != 0;
+ #elif defined(PTRACE_AVAILABLE)
+     if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1)
+         return true;

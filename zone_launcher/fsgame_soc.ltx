@@ -1,0 +1,24 @@
+;abbreviation           = recurs|notif|  root|                  add|        ext|            description
+; Shadow of Chernobyl layout (config\, not configs\), from GOG's installer, with saves and logs
+; kept in _appdata_\ like OpenXRay's fsgame.ltx for Clear Sky and Call of Pripyat.
+$app_data_root$         = true|  false| $fs_root$|            _appdata_\
+$arch_dir$              = false| false| $fs_root$
+$game_arch_mp$          = false| false| $fs_root$|            mods\
+$game_data$             = false| true|  $fs_root$|            gamedata\
+$game_ai$               = true|  false| $game_data$|          ai\
+$game_spawn$            = true|  false| $game_data$|          spawns\
+$game_levels$           = true|  false| $game_data$|          levels\
+$game_meshes$           = true|  true|  $game_data$|          meshes\|       *.ogf;*.omf|   Game Object files
+$game_anims$            = true|  true|  $game_data$|          anims\|        *.anm;*.anms|  Animation files
+$game_dm$               = true|  true|  $game_data$|          meshes\|       *.dm|          Detail Model files
+$game_shaders$          = true|  true|  $game_data$|          shaders\
+$game_sounds$           = true|  true|  $game_data$|          sounds\
+$game_textures$         = true|  true|  $game_data$|          textures\
+$game_config$           = true|  false| $game_data$|          config\
+$textures$              = true|  true|  $game_data$|          textures\
+$level$                 = false| false| $game_levels$
+$game_scripts$          = true|  false| $game_data$|          scripts\|      *.script|      Game script files
+$logs$                  = true|  false| $app_data_root$|      logs\
+$screenshots$           = true|  false| $app_data_root$|      screenshots\
+$game_saves$            = true|  false| $app_data_root$|      savedgames\
+$downloads$             = false| false| $app_data_root$

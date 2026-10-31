@@ -1,0 +1,74 @@
+From: Zone Launcher
+Subject: [PATCH] Keep missing main-menu error dialogs in place
+
+CMainMenu looks its error dialogs up by EErrorDlg index, but dropped any
+dialog whose template failed to load. Shadow of Chernobyl lacks several
+templates, so later dialogs shifted down and m_pMB_ErrDlgs[DownloadMPMap]
+read past the end of the vector (a libstdc++ assertion abort on startup,
+undefined behaviour without assertions). Keep a null slot instead and
+null-check every use.
+
+---
+diff --git a/src/xrGame/MainMenu.cpp b/src/xrGame/MainMenu.cpp
+index 220287563..f64184fab 100644
+--- a/src/xrGame/MainMenu.cpp
++++ b/src/xrGame/MainMenu.cpp
+@@ -112,14 +112,14 @@ CMainMenu::CMainMenu()
+         g_statHint = xr_new<CUIButtonHint>();
+         m_pGameSpyFull = xr_new<CGameSpy_Full>();
+ 
++        // Dialogs are looked up by EErrorDlg index, so a template the game doesn't have
++        // (Shadow of Chernobyl lacks several) must leave a null slot, not shift the rest.
+         for (cpcstr name : ErrMsgBoxTemplate)
+         {
+-            CUIMessageBoxEx* msgBox = m_pMB_ErrDlgs.emplace_back(xr_new<CUIMessageBoxEx>());
++            CUIMessageBoxEx* msgBox = xr_new<CUIMessageBoxEx>();
+             if (!msgBox->InitMessageBox(name))
+-            {
+-                m_pMB_ErrDlgs.pop_back();
+                 xr_delete(msgBox);
+-            }
++            m_pMB_ErrDlgs.emplace_back(msgBox);
+         }
+ 
+         CUIMessageBoxEx* downloadMsg = m_pMB_ErrDlgs[DownloadMPMap];
+@@ -616,7 +616,8 @@ void CMainMenu::CheckForErrorDlg()
+ {
+     if (m_NeedErrDialog == ErrNoError)
+         return;
+-    m_pMB_ErrDlgs[m_NeedErrDialog]->ShowDialog(false);
++    if (CUIMessageBoxEx* msgBox = m_pMB_ErrDlgs[m_NeedErrDialog])
++        msgBox->ShowDialog(false);
+     m_NeedErrDialog = ErrNoError;
+ };
+ 
+@@ -662,7 +663,8 @@ void CMainMenu::OnPatchCheck(bool success)
+ {
+     if (!success)
+     {
+-        m_pMB_ErrDlgs[NoNewPatch]->ShowDialog(false);
++        if (CUIMessageBoxEx* msgBox = m_pMB_ErrDlgs[NoNewPatch])
++            msgBox->ShowDialog(false);
+         return;
+     }
+     if (m_sPDProgress.IsInProgress)
+@@ -687,7 +689,8 @@ void CMainMenu::OnSessionTerminate(LPCSTR reason)
+         STRCONCAT(text, str, " ", reason);
+     }
+ 
+-    m_pMB_ErrDlgs[SessionTerminate]->SetText(StringTable().translate(text).c_str());
++    if (CUIMessageBoxEx* msgBox = m_pMB_ErrDlgs[SessionTerminate])
++        msgBox->SetText(StringTable().translate(text).c_str());
+     SetErrorDialog(CMainMenu::SessionTerminate);
+ }
+ 
+@@ -697,7 +700,8 @@ void CMainMenu::OnLoadError(LPCSTR module)
+     string1024 Text;
+     strconcat(sizeof(Text), Text, str, " ");
+     xr_strcat(Text, sizeof(Text), module);
+-    m_pMB_ErrDlgs[LoadingError]->SetText(Text);
++    if (CUIMessageBoxEx* msgBox = m_pMB_ErrDlgs[LoadingError])
++        msgBox->SetText(Text);
+     SetErrorDialog(CMainMenu::LoadingError);
+ }
+ 

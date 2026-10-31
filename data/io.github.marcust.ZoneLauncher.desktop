@@ -1,0 +1,10 @@
+[Desktop Entry]
+Name=Zone Launcher
+Comment=Play S.T.A.L.K.E.R. Shadow of Chernobyl, Clear Sky and Call of Pripyat with OpenXRay
+Exec=zone-launcher
+Icon=io.github.marcust.ZoneLauncher
+Terminal=false
+Type=Application
+Categories=Game;ActionGame;
+Keywords=stalker;openxray;xray;chernobyl;pripyat;clear sky;
+StartupNotify=true

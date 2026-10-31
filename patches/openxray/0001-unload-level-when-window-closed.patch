@@ -1,0 +1,41 @@
+From: Zone Launcher
+Subject: [PATCH] Unload the level when the window is closed
+
+Closing the game window makes SDL request quit on the same frame the
+deferred KERNEL:disconnect is queued, so CApplication::Run exits before
+the level is unloaded. The render light DB then still holds lights at
+exit; their destructors lock the spatial DB that was freed together with
+g_pGamePersistent, and the process hangs forever in static destructors.
+
+---
+diff --git a/src/xrEngine/x_ray.cpp b/src/xrEngine/x_ray.cpp
+index 20d2e576e..69d6602d7 100644
+--- a/src/xrEngine/x_ray.cpp
++++ b/src/xrEngine/x_ray.cpp
+@@ -14,6 +14,7 @@
+ #include "xrCore/Threading/TaskManager.hpp"
+ #include "xrNetServer/NET_AuthCheck.h"
+ 
++#include "IGame_Level.h"
+ #include "IGame_Persistent.h"
+ #include "LightAnimLibrary.h"
+ #include "XR_IOConsole.h"
+@@ -436,6 +437,18 @@ int CApplication::Run()
+         FrameMarkEnd(FRAME_MARK_APPLICATION_RUN);
+     } // while (!SDL_QuitRequested())
+ 
++    // Closing the window makes SDL request quit on the same frame the deferred
++    // KERNEL:disconnect is queued, so the loop exits before the level is unloaded.
++    // Its lights would then outlive g_pGamePersistent's spatial DB and deadlock
++    // in static destructors on exit. Unload it now; the pending quit keeps the
++    // disconnect handler from reopening the main menu.
++    if (g_pGameLevel)
++    {
++        if (!Engine.Event.Peek("KERNEL:quit"))
++            Engine.Event.Defer("KERNEL:quit");
++        Engine.Event.Signal("KERNEL:disconnect");
++    }
++
+     Device.Shutdown();
+ 
+     return 0;

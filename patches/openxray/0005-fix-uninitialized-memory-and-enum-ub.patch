@@ -1,0 +1,82 @@
+From: Zone Launcher
+Subject: [PATCH] Fix uninitialized memory reads and enum UB found by sanitizers
+
+Found by running all three games under AddressSanitizer and
+UndefinedBehaviorSanitizer (reads of the 0xBE malloc fill pattern):
+
+- CSE_ALifeObjectPhysic never initialized m_u8NumItems, prev_freezed and
+  State, so UPDATE_Write serialized garbage velocities/positions for
+  physics objects created by A-Life. Initialize them like
+  CSE_ALifeInventoryItem does.
+- CKinematicsAnimated::IBlend_Startup filled the blend pool with copies of
+  an uninitialized CBlend (it only has a constructor in DEBUG builds).
+- CUICellContainer::ReinitSize() multiplied the uninitialized cell
+  capacity (signed overflow) when CUIDragDropListEx set the cell size
+  before the capacity.
+- ECamEffectorType and EEffectorPPType had no fixed underlying type while
+  game code and scripts store ids far beyond their named values.
+
+---
+diff --git a/src/Layers/xrRender/SkeletonAnimated.cpp b/src/Layers/xrRender/SkeletonAnimated.cpp
+index 84d1f56bf..bb4713b87 100644
+--- a/src/Layers/xrRender/SkeletonAnimated.cpp
++++ b/src/Layers/xrRender/SkeletonAnimated.cpp
+@@ -683,7 +683,7 @@ void CKinematicsAnimated::LL_SetChannelFactor(u16 channel, float factor) { chann
+ void CKinematicsAnimated::IBlend_Startup()
+ {
+     _DBG_SINGLE_USE_MARKER;
+-    CBlend B;
++    CBlend B{}; // CBlend only has a constructor in DEBUG; don't fill the pool with garbage
+     // B.blend				= CBlend::eFREE_SLOT;
+ 
+     B.set_free_state();
+diff --git a/src/xrEngine/CameraDefs.h b/src/xrEngine/CameraDefs.h
+index 01cffbb20..79a5f3008 100644
+--- a/src/xrEngine/CameraDefs.h
++++ b/src/xrEngine/CameraDefs.h
+@@ -30,14 +30,15 @@ struct SCamEffectorInfo
+     bool affected_on_hud{ true };
+ };
+ 
+-enum ECamEffectorType
++// Fixed underlying type: game code and scripts use ids far past the named values.
++enum ECamEffectorType : int
+ {
+     cefDemo = 0,
+     cefAnsel,
+     cefNext
+ };
+ 
+-enum EEffectorPPType
++enum EEffectorPPType : int
+ {
+     ppeNext = 0,
+ };
+diff --git a/src/xrGame/ui/UIDragDropListEx.cpp b/src/xrGame/ui/UIDragDropListEx.cpp
+index 4bba28ea4..24a6a9d67 100644
+--- a/src/xrGame/ui/UIDragDropListEx.cpp
++++ b/src/xrGame/ui/UIDragDropListEx.cpp
+@@ -643,6 +643,9 @@ CUICellContainer::CUICellContainer(CUIDragDropListEx* parent)
+     m_pParentDragDropList = parent;
+     hShader->create("hud" DELIMITER "fog_of_war", "ui" DELIMITER "ui_grid");
+     //	hShader_selected->create	( "hud" DELIMITER "fog_of_war", "ui_grid_selected" );
++    // CUIDragDropListEx sets the cell size before the capacity, and ReinitSize() multiplies both.
++    m_cellsCapacity.set(0, 0);
++    m_cellSize.set(0, 0);
+     m_cellSpacing.set(0, 0);
+ }
+ 
+diff --git a/src/xrServerEntities/xrServer_Objects_ALife.cpp b/src/xrServerEntities/xrServer_Objects_ALife.cpp
+index ca3320d63..748b4733a 100644
+--- a/src/xrServerEntities/xrServer_Objects_ALife.cpp
++++ b/src/xrServerEntities/xrServer_Objects_ALife.cpp
+@@ -830,7 +830,8 @@ void CSE_ALifeLevelChanger::FillProps(LPCSTR pref, PropItemVec& items)
+ // CSE_ALifeObjectPhysic
+ ////////////////////////////////////////////////////////////////////////////
+ CSE_ALifeObjectPhysic::CSE_ALifeObjectPhysic(LPCSTR caSection)
+-    : CSE_ALifeDynamicObjectVisual(caSection), CSE_PHSkeleton(caSection), freezed(false)
++    : CSE_ALifeDynamicObjectVisual(caSection), CSE_PHSkeleton(caSection),
++      m_u8NumItems(0), prev_freezed(false), freezed(false), State{}
+ {
+     type = epotSkeleton;
+     mass = 10.f;

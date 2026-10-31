@@ -1,0 +1,40 @@
+* phase time: 90 ms
+! [LUA]  SCRIPT RUNTIME ERROR: Abort(): [actor_sound:__init]: There is no sound collection with path 'characters_voice\scenario\agroprom\agr_base_commander_reward_pda'.
+! [LUA]   0 : [C  ] 
+! [LUA]   1 : [C  ] error_log
+! [LUA]   2 : [Lua] ...ld\S.T.A.L.K.E.R. - Clear Sky\gamedata\scripts\_g.script(19) : abort(15)
+! [LUA]   3 : [Lua] ...L.K.E.R. - Clear Sky\gamedata\scripts\sound_theme.script(378) : function <...L.K.E.R. - Clear Sky\gamedata\scripts\sound_theme.script:337>
+! [LUA]   4 : [C  ] actor_sound
+! [LUA]   5 : [Lua] ...L.K.E.R. - Clear Sky\gamedata\scripts\sound_theme.script(681) : load_sound(665)
+! [LUA]   6 : [Lua] ...ld\S.T.A.L.K.E.R. - Clear Sky\gamedata\scripts\_g.script(369) : function <...ld\S.T.A.L.K.E.R. - Clear Sky\gamedata\scripts\_g.script:286>
+! [LUA]  SCRIPT RUNTIME ERROR
+ 
+FATAL ERROR
+ 
+[error] Expression    : LUA error
+[error] Function      : lua_error
+[error] File          : /home/user/xray-16/src/xrScriptEngine/script_engine.cpp
+[error] Line          : 678
+[error] Description   : see log for details
+ 
+
+stack trace:
+
+/usr/games/xr_3da(+0x3320306) [0x5a54aed29306]
+/usr/games/xr_3da(+0xf886ee) [0x5a54ac9916ee]
+/usr/games/xr_3da(+0x18275ad) [0x5a54ad2305ad]
+/usr/games/xr_3da(+0x182736d) [0x5a54ad23036d]
+/usr/games/xr_3da(+0x1827071) [0x5a54ad230071]
+/usr/games/xr_3da(+0x1826c15) [0x5a54ad22fc15]
+/usr/games/xr_3da(+0x182635a) [0x5a54ad22f35a]
+/usr/games/xr_3da(+0x1c374ec) [0x5a54ad6404ec]
+/usr/games/xr_3da(+0xc4b99a) [0x5a54ac65499a]
+/usr/games/xr_3da(+0x230c8d0) [0x5a54add158d0]
+/usr/games/xr_3da(+0x1e03e8a) [0x5a54ad80ce8a]
+/usr/games/xr_3da(+0xef5ebf) [0x5a54ac8feebf]
+/usr/games/xr_3da(+0xef3ed7) [0x5a54ac8fced7]
+/usr/games/xr_3da(+0xef4448) [0x5a54ac8fd448]
+/usr/games/xr_3da(+0xee00e1) [0x5a54ac8e90e1]
+/usr/games/xr_3da(+0xe9a0f2) [0x5a54ac8a30f2]
+/usr/games/xr_3da(main+0x10a) [0x5a54ac8a327c]
+/usr/lib/x86_64-linux-gnu/libc.so.6(+0x2a601) [0x7d8ffc82a601]
