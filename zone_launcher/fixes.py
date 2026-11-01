@@ -7,7 +7,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
-from .detect import Install
+from . import display
+from .detect import MARKER, Install
 from .engine import Engine
 from .games import GAMES
 
@@ -16,6 +17,12 @@ LANGUAGE_PACK = re.compile(
     r"^x(english|russian|german|french|italian|spanish|polish|ukrainian)(_\w+)?\.db$", re.IGNORECASE
 )
 SOC_FSGAME = Path(__file__).with_name("fsgame_soc.ltx")
+# Shadow of Chernobyl has no language packs: its archives hold the text of these languages (English
+# voices for all), chosen with the g_language console variable.
+SOC_TEXT = {"english": "eng", "czech": "cze", "spanish": "esp", "french": "fra", "german": "ger",
+            "italian": "ita", "polish": "pol"}
+# Packs a switched-away-from language is moved to; the engine doesn't look in subfolders.
+INACTIVE = ".inactive"
 
 
 @dataclass
@@ -29,23 +36,47 @@ class Issue:
     blocking: bool = True
 
 
+def _language_of(path: Path) -> str | None:
+    m = LANGUAGE_PACK.match(path.name)
+    return m.group(1).lower() if m else None
+
+
 def installed_language_packs(install: Install) -> list[Path]:
     loc = install.path / "localization"
-    return sorted(p for p in loc.glob("*.db") if LANGUAGE_PACK.match(p.name)) if loc.is_dir() else []
+    return sorted(p for p in loc.iterdir() if _language_of(p)) if loc.is_dir() else []
+
+
+def _linked_source(install: Install) -> Path | None:
+    try:
+        return Path((install.path / MARKER).read_text().strip())
+    except OSError:
+        return None
 
 
 def available_language_packs(install: Install) -> dict[str, list[Path]]:
-    """Language packs that could be installed, keyed by language name ("english", "polish", ...)."""
+    """Every language pack this game could use, keyed by language ("english", "polish", ...)."""
     files: list[Path] = []
     if install.gog_support:
         files += (install.gog_support / "add").glob("*.db")
-    files += (install.path / "languages").glob("*/*.db")
-    packs: dict[str, list[Path]] = {}
-    for f in sorted(files):
-        m = LANGUAGE_PACK.match(f.name)
-        if m:
-            packs.setdefault(m.group(1).lower(), []).append(f)
-    return packs
+    roots = [install.path]
+    if source := _linked_source(install):
+        roots.append(source)  # its localization/ isn't linked as a whole; the packs are ours to manage
+    for root in roots:
+        files += (root / "languages").glob("*/*.db")
+        files += (root / "localization").glob("*.db")
+    files += (install.path / "localization" / INACTIVE).glob("*.db")
+    packs: dict[str, dict[str, Path]] = {}
+    for path in sorted(files):
+        if language := _language_of(path):
+            # One file per name; the first found (gog-support, then the game's own) wins.
+            packs.setdefault(language, {}).setdefault(path.name, path)
+    return {language: list(byname.values()) for language, byname in packs.items()}
+
+
+def available_languages(install: Install) -> list[str]:
+    if not GAMES[install.game].uses_localization:
+        return list(SOC_TEXT)
+    return sorted(set(available_language_packs(install)) | {_language_of(p) for p in installed_language_packs(install)})
 
 
 def _copy_into(src: Path, dest_dir: Path) -> None:
@@ -121,26 +152,87 @@ def _check_shaders(install: Install, engine: Engine) -> list[Issue]:
     return [Issue("shaders", "OpenGL shaders not linked", detail, fix)]
 
 
-def _check_language(install: Install, preferred: str) -> list[Issue]:
-    if not GAMES[install.game].uses_localization or installed_language_packs(install):
+def _check_soc_language(install: Install, preferred: str) -> list[Issue]:
+    settings = display.user_ltx(install)
+    if preferred not in SOC_TEXT:
+        return [Issue("language-unavailable", f"{preferred.title()} isn't available",
+                      f"{GAMES[install.game].title} has text in {', '.join(l.title() for l in SOC_TEXT)}; "
+                      "it keeps its current language.", blocking=False)]
+    try:
+        current = re.search(r"^g_language (\S+)", settings.read_text(errors="replace"), re.MULTILINE)
+    except FileNotFoundError:
+        current = None
+    code = SOC_TEXT[preferred]
+    if (current.group(1) if current else "eng") == code:
         return []
+
+    def fix() -> str:
+        # g_language_ltx must name the language in the game's localization.ltx, or the engine ignores
+        # g_language and uses that default instead.
+        display.set_vars(settings, {"g_language": code, "g_language_ltx": "eng"})
+        return f"Switched the game's text to {preferred.title()}"
+
+    return [Issue("language", f"Switch text to {preferred.title()}",
+                  "Shadow of Chernobyl's text changes; voices stay English.", fix)]
+
+
+def _check_language(install: Install, preferred: str) -> list[Issue]:
+    if not GAMES[install.game].uses_localization:
+        return _check_soc_language(install, preferred)
+    loc = install.path / "localization"
+    installed = installed_language_packs(install)
+    active = {_language_of(p) for p in installed}
     packs = available_language_packs(install)
-    if not packs:
+    if not packs and not installed:
         return [Issue("language-missing", "No language pack found",
                       "localization/ has no x<language>.db file, so voices and text are missing and "
                       "a new game will crash. Reinstall the game, or copy the pack into localization/.")]
-    language = preferred if preferred in packs else "english" if "english" in packs else next(iter(packs))
-    files = packs[language]
-    size_mb = sum(f.stat().st_size for f in files) // 2**20
+    if preferred in packs or preferred in active:
+        want = preferred
+    else:
+        want = next(iter(active)) if len(active) == 1 else "english" if "english" in packs else next(iter(packs))
+    notes = []
+    if want != preferred:
+        notes.append(Issue("language-unavailable", f"{preferred.title()} isn't available",
+                           f"{GAMES[install.game].title} has {', '.join(l.title() for l in available_languages(install))}; "
+                           f"it stays in {want.title()}.", blocking=False))
+    if active == {want}:
+        return notes
+    files = packs.get(want, [p for p in installed if _language_of(p) == want])
+    size_mb = sum(p.stat().st_size for p in files if p.is_file()) // 2**20
+    game_root = (_linked_source(install) or install.path).resolve()
 
     def fix() -> str:
-        for f in files:
-            _copy_into(f, install.path / "localization")
-        return f"Installed the {language.title()} language pack"
+        for pack in installed_language_packs(install):
+            if _language_of(pack) == want:
+                continue
+            if pack.is_symlink():
+                pack.unlink()
+            else:  # a real file the launcher copied or the player put there: keep it
+                (loc / INACTIVE).mkdir(exist_ok=True)
+                pack.replace(loc / INACTIVE / pack.name)
+        for src in files:
+            dst = loc / src.name
+            if os.path.lexists(dst):
+                continue
+            if src.parent.name == INACTIVE:
+                src.replace(dst)
+            elif str(src.resolve()).startswith(str(game_root) + os.sep):
+                dst.symlink_to(src)  # part of the game install: link it
+            else:
+                _copy_into(src, loc)  # GOG's support files can be cleaned up by Heroic: copy them
+        # Let the active pack's localization.ltx decide, not the language saved from last time.
+        display.set_vars(display.user_ltx(install), {"g_language": None, "g_language_ltx": None})
+        return f"Switched to the {want.title()} language pack"
 
-    return [Issue("language", f"{language.title()} language pack not installed",
-                  f"Voices and text live in {', '.join(f.name for f in files)} ({size_mb} MB), which "
-                  "isn't in localization/. Without it, starting a new game crashes.", fix)]
+    if not active:
+        title = f"{want.title()} language pack not installed"
+        detail = (f"Voices and text live in {', '.join(f.name for f in files)} ({size_mb} MB), which "
+                  "isn't in localization/. Without it, starting a new game crashes.")
+    else:
+        title = f"Switch language to {want.title()}"
+        detail = f"Activates {', '.join(f.name for f in files)}; the current pack is set aside, not deleted."
+    return [*notes, Issue("language", title, detail, fix)]
 
 
 def _check_default_settings(install: Install) -> list[Issue]:

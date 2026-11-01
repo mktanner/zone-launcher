@@ -29,6 +29,11 @@ You need your own copies of the games. No game files are included.
     Windows installer would have installed.
   - **OpenGL shaders** not linked, or linked to a different engine install (such as a system
     `/usr/share/openxray` seen from inside the Flatpak): re-links `gamedata/shaders/gl`.
+- **Language**: one setting for all games, applied on the next Play to every game that has it.
+  Clear Sky switches between its full language packs (voices and text), Shadow of Chernobyl between
+  the text languages in its archives; Call of Pripyat only ships English from GOG. A pack that's
+  switched away from is unlinked, or set aside in `localization/.inactive/` if it's a real file.
+  Details lists each game's languages.
 - **Resolution and display mode**: fullscreen at your monitor's native resolution by default,
   or borderless/windowed at any common size. Written into the game's `_appdata_/user.ltx` before
   each launch; pick "Use in-game setting" to manage it from the game's own options instead.

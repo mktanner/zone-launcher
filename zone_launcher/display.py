@@ -35,19 +35,42 @@ def user_ltx(install: Install) -> Path:
     return install.path / "_appdata_" / "user.ltx"
 
 
-def apply(path: Path, resolution: tuple[int, int] | None, window_mode: str) -> None:
-    """Set vid_mode / vid_window_mode in user.ltx; None or KEEP leaves that setting alone."""
+def set_vars(path: Path, wanted: dict[str, str | None]) -> None:
+    """Set console variables in user.ltx (None removes one), keeping everything else as it was."""
     try:
         text = path.read_bytes().decode("latin-1")
     except FileNotFoundError:
         text = ""
     newline = "\r\n" if "\r\n" in text else "\n"
-    lines = text.splitlines()
+    seen = set()
+    out = []
+    for line in text.splitlines():
+        key = line.split(maxsplit=1)[0] if line.strip() else ""
+        if key in wanted:
+            if key not in seen and wanted[key] is not None:
+                out.append(f"{key} {wanted[key]}")
+            seen.add(key)
+            continue  # drop duplicates so a later line can't undo ours
+        out.append(line)
+    out += [f"{k} {v}" for k, v in wanted.items() if k not in seen and v is not None]
+    if out == text.splitlines():
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_bytes((newline.join(out) + newline).encode("latin-1"))
+    tmp.replace(path)
 
-    wanted: dict[str, str] = {}
+
+def apply(path: Path, resolution: tuple[int, int] | None, window_mode: str) -> None:
+    """Set vid_mode / vid_window_mode in user.ltx; None or KEEP leaves that setting alone."""
+    wanted: dict[str, str | None] = {}
     if resolution:
         w, h = resolution
         value = f"{w}x{h}"
+        try:
+            lines = path.read_bytes().decode("latin-1").splitlines()
+        except FileNotFoundError:
+            lines = []
         old = next((m for m in map(VID_MODE.match, lines) if m), None)
         # Keep the refresh rate only while the resolution is unchanged; another size may not support it.
         if old and old.group(3) and (int(old.group(1)), int(old.group(2))) == (w, h):
@@ -57,22 +80,5 @@ def apply(path: Path, resolution: tuple[int, int] | None, window_mode: str) -> N
         wanted["vid_window_mode"] = WINDOW_MODES[window_mode][1]
         # Older setting the engine still reads; it must agree or it overrides the mode above.
         wanted["rs_fullscreen"] = "on" if window_mode == "fullscreen" else "off"
-    if not wanted:
-        return
-
-    seen = set()
-    out = []
-    for line in lines:
-        key = line.split(maxsplit=1)[0] if line.strip() else ""
-        if key in wanted:
-            if key not in seen:
-                out.append(f"{key} {wanted[key]}")
-                seen.add(key)
-            continue  # drop duplicates so a later line can't undo ours
-        out.append(line)
-    out += [f"{k} {v}" for k, v in wanted.items() if k not in seen]
-
-    path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_bytes((newline.join(out) + newline).encode("latin-1"))
-    tmp.replace(path)
+    if wanted:
+        set_vars(path, wanted)

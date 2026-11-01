@@ -10,7 +10,7 @@ import os
 from pathlib import Path
 
 from .detect import MARKER, Install
-from .fixes import Issue
+from .fixes import LANGUAGE_PACK, Issue
 from .games import GAMES, identify
 
 # Never linked: the launcher or the engine owns these here.
@@ -35,6 +35,11 @@ def is_own_copy(target: Path) -> bool:
     return target.is_dir() and linked_source(target) is None and identify(target) is not None
 
 
+def _language_pack(rel: str, name: str) -> bool:
+    # Which language is active is up to fixes._check_language, so leave localization/x<lang>.db alone.
+    return rel == "localization" and bool(LANGUAGE_PACK.match(name))
+
+
 def _is_under(path: str, root: Path) -> bool:
     return os.path.commonpath([os.path.abspath(path), str(root)]) == str(root)
 
@@ -50,7 +55,7 @@ def link(source: Path, target: Path) -> None:
         wanted = set()
         for entry in sorted(src_dir.iterdir()) if src_dir.is_dir() else []:
             sub = f"{rel}/{entry.name}" if rel else entry.name
-            if sub in SKIP:
+            if sub in SKIP or _language_pack(rel, entry.name):
                 continue
             wanted.add(entry.name)
             dst = dst_dir / entry.name
@@ -68,7 +73,7 @@ def link(source: Path, target: Path) -> None:
         # Drop links into a previous source, or to files the source no longer has.
         for dst in dst_dir.iterdir():
             sub = f"{rel}/{dst.name}" if rel else dst.name
-            if dst.is_symlink() and sub not in SKIP and dst.name not in wanted:
+            if dst.is_symlink() and sub not in SKIP and dst.name not in wanted and not _language_pack(rel, dst.name):
                 target_path = os.readlink(dst)
                 if not _is_under(target_path, target):
                     dst.unlink()

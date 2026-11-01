@@ -19,7 +19,9 @@ from .mods_ui import ModsDialog  # noqa: E402
 from .config import Config  # noqa: E402
 from .games import GAMES, identify  # noqa: E402
 
-LANGUAGES = ["english", "russian", "ukrainian", "german", "french", "italian", "spanish", "polish"]
+# Every language at least one game has (Clear Sky packs, Shadow of Chernobyl text); each game switches
+# to it if it can and says so in Details if not.
+LANGUAGES = ["english", "russian", "german", "french", "italian", "spanish", "polish", "czech"]
 
 
 @dataclass
@@ -219,6 +221,11 @@ class LauncherWindow(Adw.ApplicationWindow):
                 where.add(Adw.ActionRow(title="Plays from", subtitle=f"{state.run.path}  (linked to the install above)",
                                         subtitle_selectable=True, use_markup=False))
 
+            if state.run:
+                available = fixes.available_languages(state.run)
+                where.add(Adw.ActionRow(title="Languages", use_markup=False,
+                                        subtitle=", ".join(l.title() for l in available) or "None found"))
+
             checks = Adw.PreferencesGroup(title="Checks")
             page.add(checks)
             for issue in state.issues or []:
@@ -270,7 +277,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         field("Display", self.build_choice(modes, "window_mode"), 0, 0)
         field("Resolution", self.build_choice(resolutions, "resolution"), 2, 0)
         language = self.build_choice(languages, "language", refresh=True)
-        language.set_tooltip_text("Language pack to install when a game has none")
+        language.set_tooltip_text("Applied on the next Play to every game that has it; "
+                                  "Details shows each game's languages")
         field("Language", language, 4, 0)
 
         args = Gtk.Entry(text=self.config.extra_args, placeholder_text="none", hexpand=True)
