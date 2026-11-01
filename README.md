@@ -67,13 +67,39 @@ yourself, see [Building](#building).
 - **One window, no scrolling**: the three games side by side, each with its status, Mods,
   Details (install, checks and fixes, log) and Play; settings in a bar along the bottom.
 - **Shows why a game crashed**: after a crash it pulls the error out of the OpenXRay log.
-- **Mods**: install mods from zip/7z/rar archives or unpacked folders (button or drag and drop),
-  switch them and their optional parts on and off, and set the load order. See below.
+- **Mods**: browse ModDB for each game's mods and addons, download in your browser and have the
+  launcher install the file when it lands; or install zip/7z/rar archives and unpacked folders
+  yourself (button or drag and drop). Switch mods and their optional parts on and off, and set the
+  load order. See below.
 
 ## Mods
 
 Each game's card has a **Mods** button that opens its mod list.
 
+- **Browse ModDB…** lists the game's 30 most recently updated mods or addons on ModDB, with
+  pictures and a filter. Opening a mod shows its newest files (up to 30) with their type (full
+  version, patch...) and download size. **Download** looks up the file's
+  name, size and MD5 on its ModDB page, then opens ModDB's download page in your browser (ModDB
+  doesn't allow automated downloads, so the launcher never downloads files itself). The launcher
+  watches your Downloads folder (as set in `~/.config/user-dirs.dirs`) until the file is complete,
+  checks its MD5, and installs it under the file's ModDB name, remembering where it came from.
+  The wait carries on if you close the mods window; it's forgotten when the launcher quits. If
+  your browser saves the file somewhere else, choose it from the waiting row.
+- **Not every ModDB mod works here.** Mods for the original game usually do; standalone games such
+  as Anomaly (and GAMMA on top of it), and mods that need their own engine (OGSR, OGSE, X-Ray
+  Monolith, or anything that replaces the game's `bin/` files) don't run on OpenXRay. The ModDB
+  pages say so, and entries whose name or summary mentions one of these get a warning. A mod that
+  turns out to ship its own programs and `fsgame.ltx` gets a warning after installing.
+- For anything not in the list, paste a link to a ModDB mod (to see its files) or to a file or
+  addon (to download it) into the filter, or use **Search on ModDB** and **All files on ModDB**,
+  which open ModDB in your browser.
+- The launcher only reads ModDB pages that its `robots.txt` allows (a list's first page, a mod's
+  downloads page, a file's page), identifies itself in its User-Agent, and caches lists for an
+  hour, file pages for a day and pictures for a week (`~/.cache/zone-launcher/moddb/`). Download
+  sizes come from each file's page, looked up two at a time.
+- **Deleting** a mod (the trash button on its row) removes it from the library and shows how much
+  space that frees. If the archive it was installed from is still there, you can move that to the
+  trash too.
 - **Installing** unpacks a mod once into the launcher's library (`~/.var/app/<app id>/data/zone-launcher/mods/`
   for the Flatpak, `~/.local/share/zone-launcher/mods/` otherwise). The launcher looks for the folders
   that hold `gamedata/`, `patches/` or `.db` archives: the top-most one is the mod itself (on by
@@ -171,7 +197,7 @@ with GCC 15 and later.
 
 ## Developing
 
-The core logic (`detect.py`, `fixes.py`, `engine.py`) doesn't import GTK and runs on any Python 3.10+:
+The core logic (`detect.py`, `fixes.py`, `engine.py`, `mods.py`, `moddb.py`, `downloads.py`) doesn't import GTK and runs on any Python 3.10+:
 
 ```bash
 python3 -m unittest discover -s tests -t .
@@ -191,6 +217,10 @@ flatpak run --filesystem=home --command=python3 org.gnome.Sdk//51 bin/zone-launc
 | `zone_launcher/fixes.py` | The pre-launch checks and their fixes |
 | `zone_launcher/engine.py` | Finds and launches `xr_3da`, reads crash logs |
 | `zone_launcher/files.py` | Lists a game folder and where each file comes from |
+| `zone_launcher/mods.py` | The mod library: installing, optional parts, load order, linking into the game |
+| `zone_launcher/moddb.py` | Reads ModDB's lists, files feeds and file pages |
+| `zone_launcher/downloads.py` | Notices finished browser downloads and checks them |
 | `zone_launcher/window.py` | The GTK4/libadwaita window |
 | `zone_launcher/files_ui.py` | The file browser |
+| `zone_launcher/mods_ui.py`, `moddb_ui.py` | The mods window and its ModDB pages |
 | `flatpak/` | Flatpak manifest (builds OpenXRay + the launcher) |

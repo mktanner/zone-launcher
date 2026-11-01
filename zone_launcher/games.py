@@ -17,17 +17,19 @@ class Game:
     # Clear Sky and Call of Pripyat keep voice/text in localization/x<language>.db.
     uses_localization: bool
     icon: str
+    # The game's address on ModDB: https://www.moddb.com/games/<moddb>.
+    moddb: str
 
 
 GAMES: dict[str, Game] = {
     g.key: g
     for g in (
         Game("soc", "Shadow of Chernobyl", "-soc", "S.T.A.L.K.E.R. - Shadow of Chernobyl",
-             "1207660573", "4500", False, "openxray_soc"),
+             "1207660573", "4500", False, "openxray_soc", "stalker"),
         Game("cs", "Clear Sky", "-cs", "S.T.A.L.K.E.R. - Clear Sky",
-             "1207660603", "20510", True, "openxray_cs"),
+             "1207660603", "20510", True, "openxray_cs", "stalker-clear-sky"),
         Game("cop", "Call of Pripyat", None, "S.T.A.L.K.E.R. - Call of Pripyat",
-             "1207660583", "41700", True, "openxray_cop"),
+             "1207660583", "41700", True, "openxray_cop", "stalker-call-of-pripyat"),
     )
 }
 

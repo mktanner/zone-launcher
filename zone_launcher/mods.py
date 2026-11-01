@@ -45,6 +45,12 @@ class Mod:
     installed: str
     components: list[Component]
     warnings: list[str] = field(default_factory=list)
+    # Where it was downloaded from, for mods installed from ModDB: {"site", "mod", "page", "file"}.
+    source: dict[str, str] = field(default_factory=dict)
+    # Bytes the unpacked mod takes in the library (0 for mods installed before this was recorded).
+    size: int = 0
+    # The archive it was installed from, so removing the mod can offer to delete that too.
+    archive_path: str = ""
     # Filled from the game's state file, not stored in mod.json.
     enabled: list[str] = field(default_factory=list)
 
@@ -185,6 +191,12 @@ def find_components(root: Path) -> list[Component]:
 
 def _warnings(root: Path) -> list[str]:
     warnings = []
+    has_exe = any(p.suffix.lower() == ".exe" for p in root.rglob("*") if p.is_file())
+    has_fsgame = any(p.name.lower() == "fsgame.ltx" for p in root.rglob("*"))
+    if has_exe and has_fsgame:
+        warnings.append("Looks like a standalone game or a mod built on its own engine (it has its own "
+                        "programs and fsgame.ltx), not a mod for the original game. It probably won't "
+                        "work; check the mod's page for what it needs.")
     if any(p.is_dir() and p.name.lower() == "bin" for p in root.rglob("*")):
         warnings.append("Includes Windows engine files (bin/), which were skipped: OpenXRay replaces "
                         "the game's engine. Features that depend on a modified engine won't work.")
@@ -197,8 +209,9 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "mod"
 
 
-def install(game: str, source: Path, name: str | None = None) -> Mod:
-    """Install a mod from an archive or an already unpacked folder."""
+def install(game: str, source: Path, name: str | None = None, origin: dict[str, str] | None = None) -> Mod:
+    """Install a mod from an archive or an already unpacked folder. origin says where it was
+    downloaded from (see Mod.source)."""
     lib = library_dir(game)
     lib.mkdir(parents=True, exist_ok=True)
     name = name or re.sub(r"\.(zip|7z|rar)$", "", source.name, flags=re.IGNORECASE)
@@ -220,7 +233,9 @@ def install(game: str, source: Path, name: str | None = None) -> Mod:
         if not components:
             raise ModError(f"{source.name} has no gamedata/ or patches/ folder, so it doesn't look "
                            "like a mod for this game.")
-        mod = Mod(mod_id, name, source.name, date.today().isoformat(), components, _warnings(root))
+        size = sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
+        mod = Mod(mod_id, name, source.name, date.today().isoformat(), components, _warnings(root),
+                  dict(origin or {}), size, "" if source.is_dir() else str(source.resolve()))
         (root / "mod.json").write_text(json.dumps(
             {k: v for k, v in asdict(mod).items() if k != "enabled"}, indent=2))
         final = lib / mod_id
@@ -245,6 +260,23 @@ def remove(game: str, mod_id: str) -> None:
     state["enabled"].pop(mod_id, None)
     _save_state(game, state)
     shutil.rmtree(library_dir(game) / mod_id, ignore_errors=True)
+
+
+def disk_size(game: str, mod: Mod) -> int:
+    """Bytes the mod takes in the library (worked out for mods installed before sizes were recorded)."""
+    if mod.size:
+        return mod.size
+    folder = library_dir(game) / mod.id
+    return sum(p.stat().st_size for p in folder.rglob("*") if p.is_file() and not p.is_symlink())
+
+
+def downloaded_archive(mod: Mod, downloads: Path) -> Path | None:
+    """The archive the mod was installed from, if it's still there: where it was installed from, or
+    (for mods installed before that was recorded) a file of that name in the Downloads folder."""
+    for candidate in (mod.archive_path, downloads / mod.archive if mod.archive else ""):
+        if candidate and Path(candidate).is_file():
+            return Path(candidate)
+    return None
 
 
 def set_enabled(game: str, mod_id: str, component_paths: list[str]) -> None:

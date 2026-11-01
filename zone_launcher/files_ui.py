@@ -14,7 +14,7 @@ from .detect import Install  # noqa: E402
 from .games import GAMES  # noqa: E402
 
 ICONS = {"missing": "dialog-warning-symbolic", "mod": "application-x-addon-symbolic",
-         "saves": "document-save-symbolic", "launcher": "emblem-system-symbolic"}
+         "saves": "document-save-symbolic", "launcher": "applications-system-symbolic"}
 
 
 class FilesDialog(Adw.Dialog):

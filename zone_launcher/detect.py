@@ -2,6 +2,7 @@
 game folders and drives, and user-added paths."""
 
 import getpass
+from contextlib import closing
 import json
 import os
 import re
@@ -110,7 +111,7 @@ def lutris_dirs(home: Path) -> list[Path]:
         if not db.is_file():
             continue
         try:
-            with sqlite3.connect(f"file:{db}?mode=ro", uri=True) as conn:
+            with closing(sqlite3.connect(f"file:{db}?mode=ro", uri=True)) as conn:
                 dirs += [Path(d) for (d,) in conn.execute("SELECT directory FROM games WHERE directory != ''")]
         except sqlite3.Error:
             continue

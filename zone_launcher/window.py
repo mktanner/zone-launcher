@@ -16,6 +16,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import detect, display, engine, fixes, mods, setup  # noqa: E402
 from .files_ui import FilesDialog  # noqa: E402
+from .moddb_ui import Downloads  # noqa: E402
 from .mods_ui import ModsDialog  # noqa: E402
 from .config import Config  # noqa: E402
 from .games import GAMES  # noqa: E402
@@ -59,6 +60,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.details: tuple[Adw.PreferencesDialog, str] | None = None
         # A folder search is running (the one at startup, or one the user started).
         self.searching = False
+        # ModDB downloads the user started; installed when they land in Downloads.
+        self.downloads = Downloads()
+        self.downloads.listen(self.on_download)
+        self.mods_dialog: ModsDialog | None = None
 
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
@@ -179,6 +184,8 @@ class LauncherWindow(Adw.ApplicationWindow):
             installed = mods.list_mods(key)
             enabled = sum(m.is_enabled for m in installed)
             mods_text = f"Mods: {len(installed)} installed, {enabled} on" if installed else "Mods: none"
+            if waiting := len(self.downloads.waiting(key)) + len(self.downloads.busy(key)):
+                mods_text += f", {waiting} downloading"
             inner.append(Gtk.Label(label=mods_text, xalign=0, css_classes=["dim-label"]))
         else:
             inner.append(Gtk.Label(label="Install it with Heroic, Steam or GOG, or choose or search for its "
@@ -188,7 +195,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         inner.append(Gtk.Box(vexpand=True, height_request=6))  # keep buttons level across cards
         buttons = Gtk.Box(spacing=6, homogeneous=True)
         mods_btn = Gtk.Button(label="Mods", sensitive=state.install is not None and key not in self.running)
-        mods_btn.connect("clicked", lambda *_: ModsDialog(key, on_change=self.refresh).present(self))
+        mods_btn.connect("clicked", lambda *_: self.show_mods(key))
         details_btn = Gtk.Button(label="Details")
         details_btn.connect("clicked", lambda *_: self.show_details(key))
         buttons.append(mods_btn)
@@ -206,6 +213,16 @@ class LauncherWindow(Adw.ApplicationWindow):
         play.set_sensitive(state.can_play)
         inner.append(play)
         return card
+
+    def show_mods(self, key: str):
+        self.mods_dialog = ModsDialog(key, self.downloads, on_change=self.refresh)
+        self.mods_dialog.connect("closed", lambda *_: setattr(self, "mods_dialog", None))
+        self.mods_dialog.present(self)
+
+    def on_download(self, message: str | None):
+        self.refresh()
+        if message and self.mods_dialog is None:  # an open mods window shows it itself
+            self.toast(message)
 
     def show_details(self, key: str):
         dialog = Adw.PreferencesDialog(title=f"{GAMES[key].title} details", search_enabled=False)

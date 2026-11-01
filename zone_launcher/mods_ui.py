@@ -1,4 +1,4 @@
-"""The mods window for one game: install, switch on and off, order and remove mods."""
+"""The mods window for one game: browse ModDB, install, switch on and off, order and remove mods."""
 
 import threading
 from pathlib import Path
@@ -9,14 +9,18 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import mods  # noqa: E402
+from . import downloads, files, mods  # noqa: E402
 from .games import GAMES  # noqa: E402
+from .moddb_ui import BrowsePage, Downloads, open_uri, pending_row  # noqa: E402
 
 
 class ModsDialog(Adw.PreferencesDialog):
-    def __init__(self, game: str, on_change=None):
-        super().__init__(title=f"{GAMES[game].title} mods", search_enabled=False)
+    def __init__(self, game: str, downloads: Downloads, on_change=None):
+        # Tall enough for ModDB's lists; smaller windows shrink it.
+        super().__init__(title=f"{GAMES[game].title} mods", search_enabled=False, content_width=720,
+                         content_height=680)
         self.game = game
+        self.downloads = downloads
         self.on_change = on_change
         self.installing: str | None = None
         self.page = Adw.PreferencesPage()
@@ -26,6 +30,8 @@ class ModsDialog(Adw.PreferencesDialog):
         drop = Gtk.DropTarget.new(Gdk.FileList, Gdk.DragAction.COPY)
         drop.connect("drop", self.on_drop)
         self.add_controller(drop)
+        # Downloads finish (and get installed) while this window is open.
+        self.connect("closed", downloads.listen(self.on_download))
         self.refresh()
 
     # ----- building ----------------------------------------------------------------------------
@@ -33,7 +39,8 @@ class ModsDialog(Adw.PreferencesDialog):
     def refresh(self):
         for group in self.groups:
             self.page.remove(group)
-        self.groups = [self.build_install_group(), self.build_list_group()]
+        self.groups = [self.build_install_group(), self.build_downloads_group(), self.build_list_group()]
+        self.groups = [g for g in self.groups if g]
         for group in self.groups:
             self.page.add(group)
 
@@ -42,6 +49,11 @@ class ModsDialog(Adw.PreferencesDialog):
             description="Mods are applied when you press Play. Changing mods in the middle of a "
                         "playthrough can break your saves.")
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.START)
+        browse = Gtk.Button(label="Browse ModDB…", css_classes=["suggested-action"],
+                            tooltip_text="Find mods on ModDB, download them in your browser, and they're installed "
+                                         "when the download finishes")
+        browse.connect("clicked", lambda *_: self.push_subpage(BrowsePage(self, self.game, self.downloads)))
+        buttons.append(browse)
         for label, handler in (("Install from file…", self.on_install_file),
                                ("Install from folder…", self.on_install_folder)):
             btn = Gtk.Button(label=label)
@@ -57,6 +69,17 @@ class ModsDialog(Adw.PreferencesDialog):
             group.add(row)
         return group
 
+    def build_downloads_group(self) -> Adw.PreferencesGroup | None:
+        busy, waiting = self.downloads.busy(self.game), self.downloads.waiting(self.game)
+        if not busy and not waiting:
+            return None
+        group = Adw.PreferencesGroup(title="Downloads")
+        for pending in busy:
+            group.add(pending_row(self, self.downloads, pending, installing=True))
+        for pending in waiting:
+            group.add(pending_row(self, self.downloads, pending, installing=False))
+        return group
+
     def build_list_group(self) -> Adw.PreferencesGroup:
         installed = list(reversed(mods.list_mods(self.game)))  # highest priority first
         group = Adw.PreferencesGroup(
@@ -64,7 +87,7 @@ class ModsDialog(Adw.PreferencesDialog):
             description="Higher in the list wins when two mods change the same file." if len(installed) > 1 else "")
         if not installed:
             group.add(Adw.ActionRow(title="No mods yet",
-                                    subtitle="Install a zip, 7z or rar mod archive, or drop one here."))
+                                    subtitle="Browse ModDB, install a zip, 7z or rar mod archive, or drop one here."))
             return group
         conflicts = mods.conflicts(self.game)
         names = {m.id: m.name for m in installed}
@@ -76,8 +99,17 @@ class ModsDialog(Adw.PreferencesDialog):
                       names: dict[str, str]) -> Adw.ExpanderRow:
         main = mod.components[0].path
         options = mod.components[1:]
-        row = Adw.ExpanderRow(title=mod.name, use_markup=False,
-                              subtitle=f"Installed {mod.installed} from {mod.archive}")
+        source = mod.source.get("site")
+        if source:
+            subtitle = f"From {source}{': ' + mod.source['mod'] if mod.source.get('mod') else ''} · installed {mod.installed}"
+        else:
+            subtitle = f"Installed {mod.installed} from {mod.archive}"
+        subtitle += f" · {files.human_size(mods.disk_size(self.game, mod))}"
+        row = Adw.ExpanderRow(title=mod.name, use_markup=False, subtitle=subtitle)
+        delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Delete this mod", valign=Gtk.Align.CENTER,
+                            css_classes=["flat"])
+        delete.connect("clicked", lambda *_: self.on_remove(mod))
+        row.add_suffix(delete)
         switch = Gtk.Switch(active=main in mod.enabled, valign=Gtk.Align.CENTER)
         switch.connect("notify::active", self.on_mod_switched, mod)
         row.add_suffix(switch)
@@ -86,8 +118,8 @@ class ModsDialog(Adw.PreferencesDialog):
             warn = Adw.ActionRow(subtitle=warning, use_markup=False)
             warn.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
             row.add_row(warn)
-        for other, files in beats.items():
-            info = Adw.ActionRow(subtitle=f"Replaces {files} file{'s' if files != 1 else ''} from "
+        for other, replaced in beats.items():
+            info = Adw.ActionRow(subtitle=f"Replaces {replaced} file{'s' if replaced != 1 else ''} from "
                                           f"{names.get(other, other)}", use_markup=False)
             info.add_prefix(Gtk.Image(icon_name="dialog-information-symbolic"))
             row.add_row(info)
@@ -102,11 +134,12 @@ class ModsDialog(Adw.PreferencesDialog):
             ("go-up-symbolic", "Higher priority", lambda *_: self.on_move(mod, +1), position > 0),
             ("go-down-symbolic", "Lower priority", lambda *_: self.on_move(mod, -1), position < count - 1),
             ("folder-open-symbolic", "Open the mod's folder", lambda *_: self.on_open(mod), True),
-        ):
+        ) + ((("adw-external-link-symbolic", f"Open its page on {source}",
+               lambda *_: open_uri(self, mod.source.get("page") or mod.source["file"]), True),) if source else ()):
             btn = Gtk.Button(icon_name=icon, tooltip_text=tip, sensitive=sensitive)
             btn.connect("clicked", handler)
             actions.append(btn)
-        remove = Gtk.Button(label="Remove", hexpand=True, halign=Gtk.Align.END,
+        remove = Gtk.Button(label="Delete", hexpand=True, halign=Gtk.Align.END,
                             css_classes=["destructive-action"])
         remove.connect("clicked", lambda *_: self.on_remove(mod))
         actions.append(remove)
@@ -121,6 +154,11 @@ class ModsDialog(Adw.PreferencesDialog):
             self.add_toast(Adw.Toast(title=GLib.markup_escape_text(message), timeout=4))
         if self.on_change:
             self.on_change()
+
+    def on_download(self, message: str | None):
+        self.refresh()
+        if message:
+            self.add_toast(Adw.Toast(title=GLib.markup_escape_text(message), timeout=5))
 
     def on_mod_switched(self, switch, _pspec, mod: mods.Mod):
         main = mod.components[0].path
@@ -146,17 +184,32 @@ class ModsDialog(Adw.PreferencesDialog):
         Gtk.FileLauncher(file=folder).launch(self.get_root(), None, None)
 
     def on_remove(self, mod: mods.Mod):
-        dialog = Adw.AlertDialog(heading=f"Remove {mod.name}?",
-                                 body="Its files are deleted from the mod library. The game itself "
-                                      "isn't changed until you next press Play.")
+        dialog = Adw.AlertDialog(heading=f"Delete {mod.name}?",
+                                 body=f"Its files ({files.human_size(mods.disk_size(self.game, mod))}) are deleted "
+                                      "from the mod library. The game itself isn't changed until you next press Play.")
         dialog.add_response("cancel", "Cancel")
-        dialog.add_response("remove", "Remove")
+        dialog.add_response("remove", "Delete")
         dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
+        archive = mods.downloaded_archive(mod, downloads.downloads_dir())
+        also = None
+        if archive:
+            size = files.human_size(archive.stat().st_size)
+            also = Gtk.CheckButton(label=f"Also move the downloaded {archive.name} ({size}) to the trash",
+                                   tooltip_text=str(archive))
+            dialog.set_extra_child(also)
 
         def response(_d, answer):
-            if answer == "remove":
-                mods.remove(self.game, mod.id)
-                self.changed(f"Removed {mod.name}")
+            if answer != "remove":
+                return
+            mods.remove(self.game, mod.id)
+            message = f"Deleted {mod.name}"
+            if also is not None and also.get_active():
+                try:
+                    Gio.File.new_for_path(str(archive)).trash(None)
+                    message += f" and moved {archive.name} to the trash"
+                except GLib.Error as e:
+                    message += f", but couldn't move {archive.name} to the trash: {e.message}"
+            self.changed(message)
 
         dialog.connect("response", response)
         dialog.present(self)
