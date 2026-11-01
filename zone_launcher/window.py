@@ -15,13 +15,20 @@ gi.require_version("Pango", "1.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
 from . import detect, display, engine, fixes, mods, setup  # noqa: E402
+from .files_ui import FilesDialog  # noqa: E402
 from .mods_ui import ModsDialog  # noqa: E402
 from .config import Config  # noqa: E402
-from .games import GAMES, identify  # noqa: E402
+from .games import GAMES  # noqa: E402
 
 # Every language at least one game has (Clear Sky packs, Shadow of Chernobyl text); each game switches
 # to it if it can and says so in Details if not.
 LANGUAGES = ["english", "russian", "german", "french", "italian", "spanish", "polish", "czech"]
+# What to look for in a game's folder, for when it has to be picked by hand.
+FOLDER_HINT = {"soc": "gamedata.db0 and a bin folder",
+               "cs": "a resources folder with resources.db0 (and patches/xpatch_10.db)",
+               "cop": "Stalker-COP.exe, or a resources folder with resources.db3"}
+WHERE_WE_LOOK = ("OpenXRay's folder, Heroic, Steam, Lutris, ~/Games, Wine and Bottles prefixes, and "
+                 "other drives")
 
 
 @dataclass
@@ -50,16 +57,18 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.busy: dict[str, str] = {}
         # The open details dialog and its game, so it can follow refreshes.
         self.details: tuple[Adw.PreferencesDialog, str] | None = None
+        # A folder search is running (the one at startup, or one the user started).
+        self.searching = False
 
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()
         add_btn = Gtk.Button(icon_name="folder-new-symbolic", tooltip_text="Add a game folder")
         add_btn.connect("clicked", self.on_add_folder)
-        refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Look for games again")
-        refresh_btn.connect("clicked", lambda *_: self.refresh())
+        self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Look for games again")
+        self.refresh_btn.connect("clicked", lambda *_: (self.refresh(), self.search_in_background()))
         header.pack_start(add_btn)
-        header.pack_end(refresh_btn)
+        header.pack_end(self.refresh_btn)
         view.add_top_bar(header)
 
         self.banner = Adw.Banner(title="OpenXRay engine not found. Install it, or set its path below.")
@@ -77,6 +86,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.toasts.set_child(view)
         self.set_content(self.toasts)
         self.refresh()
+        self.search_in_background()
 
     # ----- building the page -------------------------------------------------------------
 
@@ -84,7 +94,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.engine = engine.find_engine(self.config.engine_override or None)
         self.banner.set_revealed(self.engine is None)
         self.engine_label.set_label(str(self.engine.binary) if self.engine else "Not found")
-        self.installs = detect.find_installs(extra=self.config.extra_folders)
+        self.installs = detect.find_installs(extra=self.config.extra_folders, searched=self.config.found_folders)
         while child := self.cards.get_first_child():
             self.cards.remove(child)
         for key in GAMES:
@@ -93,17 +103,20 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.fill_details(*self.details)
 
     def game_options(self, key: str) -> list[detect.Install]:
-        options = [i for i in self.installs if i.game == key]
-        target = setup.target_dir(key)
-        if setup.is_own_copy(target):
-            # A copy made by hand in the OpenXRay folder is the one to play; leave other installs be.
-            return [i for i in options if i.path == target.resolve()]
-        return options
+        return [i for i in self.installs if i.game == key]
 
     def selected_install(self, key: str) -> detect.Install | None:
         options = self.game_options(key)
         chosen = self.config.selected.get(key)
-        return next((i for i in options if str(i.path) == chosen), options[0] if options else None)
+        if match := next((i for i in options if str(i.path) == chosen), None):
+            return match
+        # Unless the player picked one: a copy made by hand in the OpenXRay folder, then one a store
+        # or the player added, then whatever a search found.
+        target = setup.target_dir(key)
+        if setup.is_own_copy(target):
+            if own := next((i for i in options if i.path == target.resolve()), None):
+                return own
+        return next((i for i in options if i.sources != [detect.SEARCHED]), options[0] if options else None)
 
     def game_state(self, key: str) -> GameState:
         state = GameState(self.selected_install(key), self.game_options(key))
@@ -168,15 +181,15 @@ class LauncherWindow(Adw.ApplicationWindow):
             mods_text = f"Mods: {len(installed)} installed, {enabled} on" if installed else "Mods: none"
             inner.append(Gtk.Label(label=mods_text, xalign=0, css_classes=["dim-label"]))
         else:
-            inner.append(Gtk.Label(label="Install it with Heroic, Steam or GOG, or add its folder with the "
-                                         "folder button at the top left.",
+            inner.append(Gtk.Label(label="Install it with Heroic, Steam or GOG, or choose or search for its "
+                                         "folder in Details.",
                                    wrap=True, xalign=0, css_classes=["dim-label"]))
 
         inner.append(Gtk.Box(vexpand=True, height_request=6))  # keep buttons level across cards
         buttons = Gtk.Box(spacing=6, homogeneous=True)
         mods_btn = Gtk.Button(label="Mods", sensitive=state.install is not None and key not in self.running)
         mods_btn.connect("clicked", lambda *_: ModsDialog(key, on_change=self.refresh).present(self))
-        details_btn = Gtk.Button(label="Details", sensitive=state.install is not None)
+        details_btn = Gtk.Button(label="Details")
         details_btn.connect("clicked", lambda *_: self.show_details(key))
         buttons.append(mods_btn)
         buttons.append(details_btn)
@@ -204,28 +217,8 @@ class LauncherWindow(Adw.ApplicationWindow):
     def fill_details(self, dialog: Adw.PreferencesDialog, key: str):
         state = self.game_state(key)
         page = Adw.PreferencesPage()
-        where = Adw.PreferencesGroup(title="Install")
-        page.add(where)
-        if state.install is None:
-            where.add(Adw.ActionRow(title="Not found"))
-        else:
-            if len(state.options) > 1:
-                row = Adw.ComboRow(title="Install", model=Gtk.StringList.new([i.label for i in state.options]))
-                row.set_selected(state.options.index(state.install))
-                row.connect("notify::selected", self.on_install_chosen, key, state.options)
-                where.add(row)
-            else:
-                where.add(Adw.ActionRow(title="Install", subtitle=state.install.label,
-                                        subtitle_selectable=True, use_markup=False))
-            if state.run and state.run.path != state.install.path:
-                where.add(Adw.ActionRow(title="Plays from", subtitle=f"{state.run.path}  (linked to the install above)",
-                                        subtitle_selectable=True, use_markup=False))
-
-            if state.run:
-                available = fixes.available_languages(state.run)
-                where.add(Adw.ActionRow(title="Languages", use_markup=False,
-                                        subtitle=", ".join(l.title() for l in available) or "None found"))
-
+        page.add(self.build_files_group(key, state))
+        if state.install is not None:
             checks = Adw.PreferencesGroup(title="Checks")
             page.add(checks)
             for issue in state.issues or []:
@@ -244,6 +237,82 @@ class LauncherWindow(Adw.ApplicationWindow):
         if old := dialog.get_visible_page():
             dialog.remove(old)
         dialog.add(page)
+
+    def build_files_group(self, key: str, state: GameState) -> Adw.PreferencesGroup:
+        game = GAMES[key]
+        group = Adw.PreferencesGroup(title="Game files")
+        actions = Gtk.Box(spacing=6)
+        choose = Gtk.Button(label="Choose folder…", css_classes=["flat"],
+                            tooltip_text=f"Pick the folder {game.title} is installed in")
+        choose.connect("clicked", lambda *_: self.choose_folder(key))
+        search = Gtk.Button(label="Searching…" if self.searching else "Search…", css_classes=["flat"],
+                            sensitive=not self.searching,
+                            tooltip_text="Look for the game anywhere inside a folder or drive you pick")
+        search.connect("clicked", lambda *_: self.choose_folder(key, search=True))
+        actions.append(choose)
+        actions.append(search)
+        group.set_header_suffix(actions)
+
+        install = state.install
+        if install is None:
+            row = Adw.ActionRow(title="Not found", use_markup=False,
+                                subtitle=f"Looked in {WHERE_WE_LOOK}. Choose the folder that has "
+                                         f"{FOLDER_HINT[key]}, or search a drive for it.")
+            row.add_prefix(Gtk.Image(icon_name="dialog-question-symbolic"))
+            group.add(row)
+            return group
+
+        if len(state.options) > 1:
+            row = Adw.ComboRow(title="Install", model=Gtk.StringList.new([i.label for i in state.options]),
+                               tooltip_text="Every copy of the game found; pick the one to play")
+            row.set_selected(state.options.index(install))
+            row.connect("notify::selected", self.on_install_chosen, key, state.options)
+        else:
+            row = Adw.ActionRow(title="Install", subtitle=install.label, subtitle_selectable=True,
+                                use_markup=False)
+        if set(install.sources) <= {detect.USER_ADDED, detect.SEARCHED}:
+            forget = Gtk.Button(icon_name="list-remove-symbolic", valign=Gtk.Align.CENTER, css_classes=["flat"],
+                                tooltip_text="Remove from the list (no files are deleted)")
+            forget.connect("clicked", lambda *_: self.forget_folder(install))
+            row.add_suffix(forget)
+        group.add(row)
+
+        missing = detect.missing_files(install)
+        level = detect.patch_level(install)
+        if missing:
+            contents = Adw.ActionRow(title="Files missing", use_markup=False,
+                                     subtitle=f"{', '.join(missing)} not found, so the game may not start. "
+                                              f"Verify or repair it in {', '.join(install.sources)}, or "
+                                              "choose a complete copy.")
+            contents.add_prefix(Gtk.Image(icon_name="dialog-warning-symbolic"))
+        else:
+            contents = Adw.ActionRow(title="Contents", use_markup=False,
+                                     subtitle="All game archives present" + (f" · patch {level}" if level else ""))
+        group.add(contents)
+
+        run = state.run if state.run and state.run.path.is_dir() else install
+        if state.run and state.run.path != install.path:
+            plays = "linked to the install above" if state.run.path.is_dir() else "set up on the first Play"
+            group.add(Adw.ActionRow(title="Plays from", subtitle=f"{state.run.path}  ({plays})",
+                                    subtitle_selectable=True, use_markup=False))
+        browse = Adw.ActionRow(title="Browse files", activatable=True, use_markup=False,
+                               subtitle="Every file and where it comes from (install, mods, launcher, you), "
+                                        "saved games and logs")
+        browse.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
+        manager = Gtk.Button(icon_name="folder-open-symbolic", valign=Gtk.Align.CENTER, css_classes=["flat"],
+                             tooltip_text="Open the game folder in the file manager")
+        manager.connect("clicked", lambda *_: self.open_file(run.path))
+        browse.add_suffix(manager)
+        browse.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
+        browse.connect("activated", lambda *_: FilesDialog(
+            install, run, self.engine.share if self.engine else None).present(self))
+        group.add(browse)
+
+        if state.run:
+            available = fixes.available_languages(state.run)
+            group.add(Adw.ActionRow(title="Languages", use_markup=False,
+                                    subtitle=", ".join(l.title() for l in available) or "None found"))
+        return group
 
     def build_issue_row(self, install: detect.Install, issue: fixes.Issue) -> Adw.ActionRow:
         row = Adw.ActionRow(title=issue.title, subtitle=issue.detail, use_markup=False)
@@ -352,21 +421,114 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.toast("Engine arguments saved")
 
     def on_add_folder(self, _btn):
-        Gtk.FileDialog(title="Choose a STALKER game folder").select_folder(self, None, self.on_folder_chosen)
+        self.choose_folder(None)
 
-    def on_folder_chosen(self, dialog, result):
+    def choose_folder(self, key: str | None, search: bool = False):
+        if search:
+            title = "Choose a folder or drive to search"
+        else:
+            title = f"Choose the {GAMES[key].title} folder" if key else "Choose a STALKER game folder"
+        Gtk.FileDialog(title=title).select_folder(self, None, self.on_folder_chosen, key, search)
+
+    def on_folder_chosen(self, dialog, result, key: str | None, search: bool):
         try:
             folder = dialog.select_folder_finish(result)
         except GLib.Error:
             return  # cancelled
         path = folder.get_path()
-        if path is None or identify(Path(path)) is None:
-            self.toast("That folder doesn't look like a STALKER game")
+        if path is None or path.startswith("/run/user/") and "/doc/" in path:
+            # The Flatpak's file chooser hands out folders it can't otherwise reach through a
+            # proxy path, which breaks once the engine follows links into it.
+            self.alert("The launcher can't use that folder",
+                       "It's outside the folders the launcher may read (your home folder and drives "
+                       "under /run/media, /media and /mnt). Move the game there, or give the Flatpak "
+                       "access with:\n\nflatpak override --user --filesystem=<folder> "
+                       "io.github.mktanner.ZoneLauncher")
             return
-        if path not in self.config.extra_folders:
-            self.config.extra_folders.append(path)
-            self.config.save()
+        if search:
+            self.set_searching(True)
+
+        def work():
+            found = detect.search([Path(path)], depth=8, budget=200000) if search else detect.locate(Path(path))
+            GLib.idle_add(self.add_found, found, key, Path(path), search)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def add_found(self, found: list[tuple[str, Path]], key: str | None, picked: Path, search: bool):
+        if search:
+            self.set_searching(False)
+        if not found:
+            if key:
+                body = f"Nothing in {picked} looks like {GAMES[key].title}. Choose the folder that has {FOLDER_HINT[key]}."
+            else:
+                body = (f"Nothing in {picked} looks like a STALKER game. Choose the folder that has the game's "
+                        "archives (gamedata.db0, or a resources folder), or search a drive.")
+            self.alert(f"No {GAMES[key].title if key else 'game'} files found", body)
+            return
+        for _game, path in found:
+            if str(path) not in self.config.extra_folders:
+                self.config.extra_folders.append(str(path))
+            if str(path) in self.config.hidden_folders:
+                self.config.hidden_folders.remove(str(path))
+        if key and (match := next((p for g, p in found if g == key), None)):
+            self.config.selected[key] = str(match)
+        self.config.save()
+        titles = sorted({GAMES[g].title for g, _ in found}, key=lambda title: [GAMES[k].title for k in GAMES].index(title))
+        if key and key not in {g for g, _ in found}:
+            self.toast(f"No {GAMES[key].title} there; added {', '.join(titles)} to {'its' if len(titles) == 1 else 'their'} game")
+        else:
+            n = len(found)
+            self.toast(f"Added {n} folder{'s' if n != 1 else ''}: {', '.join(titles)}")
         self.refresh()
+
+    def forget_folder(self, install: detect.Install):
+        path = str(install.path)
+        self.config.extra_folders = [p for p in self.config.extra_folders if p != path]
+        if path in self.config.found_folders and path not in self.config.hidden_folders:
+            self.config.hidden_folders.append(path)  # so the next search doesn't bring it back
+        self.config.found_folders = [p for p in self.config.found_folders if p != path]
+        if self.config.selected.get(install.game) == path:
+            del self.config.selected[install.game]
+        self.config.save()
+        self.toast("Removed from the list; choose the folder again to bring it back")
+        self.refresh()
+
+    def set_searching(self, searching: bool):
+        self.searching = searching
+        self.refresh_btn.set_sensitive(not searching)
+        self.refresh_btn.set_tooltip_text("Searching for games…" if searching else "Look for games again")
+        if self.details:
+            self.fill_details(*self.details)
+
+    def search_in_background(self):
+        """Look through the usual game folders and drives (a few seconds), and remember what's there."""
+        if self.searching:
+            return
+        self.set_searching(True)
+
+        def work():
+            found = detect.search(detect.search_roots(Path.home()))
+            GLib.idle_add(done, found)
+
+        def done(found):
+            self.set_searching(False)
+            hidden = set(self.config.hidden_folders)
+            paths = sorted(str(p) for _, p in found if str(p) not in hidden)
+            known = {str(i.path) for i in self.installs}
+            new = [p for p in paths if p not in known]
+            if paths != self.config.found_folders:
+                self.config.found_folders = paths
+                self.config.save()
+                self.refresh()
+            if new:
+                self.toast(f"Found {len(new)} more game folder{'s' if len(new) != 1 else ''}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def alert(self, heading: str, body: str):
+        dialog = Adw.AlertDialog(heading=heading, body=body)
+        dialog.add_response("close", "Close")
+        dialog.present(self)
 
     def apply_fixes(self, install: detect.Install, issues: list[fixes.Issue], then=None):
         """Run fixes off the main thread (language packs are hundreds of MB), then refresh."""

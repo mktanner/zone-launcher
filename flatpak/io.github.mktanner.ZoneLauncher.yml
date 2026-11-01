@@ -20,6 +20,9 @@ finish-args:
   # Flatpak Heroic keeps GOG's extra files (like Clear Sky's language pack) in its own folder.
   - --filesystem=~/.var/app/com.heroicgameslauncher.hgl/config/heroic:ro
   - --filesystem=~/.var/app/com.valvesoftware.Steam/.local/share/Steam
+  # Games installed with Flatpak Bottles or Lutris (found by the launcher's search).
+  - --filesystem=~/.var/app/com.usebottles.bottles/data/bottles:ro
+  - --filesystem=~/.var/app/net.lutris.Lutris/data/lutris:ro
 
 modules:
   - name: openxray

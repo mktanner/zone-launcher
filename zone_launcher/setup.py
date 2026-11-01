@@ -7,6 +7,7 @@ OpenGL shader link and the language pack.
 """
 
 import os
+import shutil
 from pathlib import Path
 
 from .detect import MARKER, Install
@@ -94,8 +95,7 @@ def plan(source: Install, home: Path | None = None) -> tuple[Install, Issue | No
     if linked_source(target) == source.path:
         return run, None
     if is_own_copy(target):
-        # Shouldn't be offered: the window only lists the hand-made copy when one exists.
-        return source, None
+        return run, _move_own_copy_aside(source, target)
 
     def fix() -> str:
         link(source.path, target)
@@ -105,4 +105,31 @@ def plan(source: Install, home: Path | None = None) -> tuple[Install, Issue | No
         "setup", "Not set up for OpenXRay yet",
         f"Play will create {target} with links to the game files in {source.path}. "
         "Nothing is copied, and the original folder isn't changed.", fix,
+    )
+
+
+def _aside_name(target: Path) -> Path:
+    aside, n = target.with_name(f"{target.name} (own copy)"), 2
+    while aside.exists():
+        aside, n = target.with_name(f"{target.name} (own copy {n})"), n + 1
+    return aside
+
+
+def _move_own_copy_aside(source: Install, target: Path) -> Issue:
+    """The player picked another install while the OpenXRay folder holds a copy they made by hand."""
+
+    def fix() -> str:
+        aside = _aside_name(target)
+        target.rename(aside)
+        link(source.path, target)
+        if (aside / "_appdata_").is_dir():
+            # Copied, not moved: the hand-made copy keeps working with its own saves if picked again.
+            shutil.copytree(aside / "_appdata_", target / "_appdata_", symlinks=True)
+        return f"Renamed your copy to \u201c{aside.name}\u201d and set up {target} (saves and settings copied)"
+
+    return Issue(
+        "setup-own-copy", "OpenXRay folder holds another copy",
+        f"{target} has a copy of the game made by hand. Play will rename it to \u201c{target.name} "
+        "(own copy)\u201d, which stays in the list, and link this install in its place. Saves and "
+        "settings are copied over.", fix,
     )

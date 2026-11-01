@@ -16,7 +16,12 @@ def config_path() -> Path:
 class Config:
     # Game key -> path of the install the user picked to play.
     selected: dict[str, str] = field(default_factory=dict)
+    # Folders the user added (or found with a search they started).
     extra_folders: list[str] = field(default_factory=list)
+    # Folders the launcher's own search of the usual places found last time.
+    found_folders: list[str] = field(default_factory=list)
+    # Found folders the user removed from the list, so searching doesn't bring them back.
+    hidden_folders: list[str] = field(default_factory=list)
     extra_args: str = ""
     language: str = "english"
     # "native", "keep" (use the in-game setting) or "WIDTHxHEIGHT".

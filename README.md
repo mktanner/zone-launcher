@@ -2,19 +2,46 @@
 
 A Linux launcher for the S.T.A.L.K.E.R. trilogy (Shadow of Chernobyl, Clear Sky, Call of Pripyat)
 running natively on the [OpenXRay](https://github.com/OpenXRay/xray-16) engine, packaged as a Flatpak
-with the engine built in.
+or an AppImage with the engine built in.
 
 You need your own copies of the games. No game files are included.
+
+## Download
+
+Get `Zone_Launcher-x86_64.AppImage` from the [latest release](https://github.com/mktanner/zone-launcher/releases/latest),
+then make it executable and run it:
+
+```bash
+chmod +x Zone_Launcher-x86_64.AppImage
+./Zone_Launcher-x86_64.AppImage
+```
+
+It needs glibc 2.39 or newer (most distros from 2024 on). To build the Flatpak or the AppImage
+yourself, see [Building](#building).
 
 ## What it does
 
 - **Finds your games** in OpenXRay's folder (`~/.local/share/GSC Game World/`), Heroic's GOG
-  library (native or Flatpak), Steam (native or Flatpak), and any folder you add.
+  library and games added to Heroic by hand (native or Flatpak), Steam and all its libraries (native
+  or Flatpak), and Lutris. In the background it also searches `~/Games`, Wine and Bottles prefixes
+  (GOG Galaxy or a retail installer run in Wine) and every drive under `/run/media`, `/media` and
+  `/mnt`, for copies no launcher knows about.
+- **Lets you pick the game files by hand**: each game's Details lists every copy found (from GOG,
+  Steam, a disc or anywhere else) to choose from. **Choose folder…** accepts the game folder, a
+  folder inside it (such as `bin/`), or a folder holding several games; **Search…** looks through
+  any folder or whole drive. A folder you pick with a different game in it is added to that game.
+  Copies you added or a search found can be removed from the list again (no files are deleted).
+- **Shows what's in the game files**: whether every archive of the game is there (an incomplete
+  download or copy is flagged), which official patch is installed, and a file browser for the game
+  folder, the original install (read-only), saved games, and settings and logs. It tells you where
+  each file comes from (the install, a mod, the launcher, the engine, or you), finds broken links,
+  and can open, show, copy the path of, or trash files you or a tool added.
 - **Sets each game up in OpenXRay's standard folder** (`~/.local/share/GSC Game World/<game>/`)
   by linking to the files of your Heroic/Steam install: nothing is copied and the original folder
   is never written to. Saves, settings and logs live in that folder's `_appdata_/`. A game you
-  already copied there by hand is used as it is. Links are refreshed on every launch, so game
-  updates are picked up.
+  already copied there by hand is used as it is; if you pick another copy instead, Play renames
+  yours to `<game> (own copy)` (still listed, with its saves) and copies its saves and settings over.
+  Links are refreshed on every launch, so game updates are picked up.
 - **Checks each game folder before launch** and fixes what it can:
   - **Missing language pack** (Clear Sky, Call of Pripyat). GOG ships Clear Sky's English voices
     and text as a separate `xenglish.db` that its Windows installer copies into `localization/`.
@@ -160,8 +187,10 @@ flatpak run --filesystem=home --command=python3 org.gnome.Sdk//51 bin/zone-launc
 | File | Purpose |
 | --- | --- |
 | `zone_launcher/games.py` | Facts about each game: engine flag, GOG/Steam IDs, how to recognise its folder |
-| `zone_launcher/detect.py` | Finds installs from OpenXRay, Heroic, Steam and user folders |
+| `zone_launcher/detect.py` | Finds installs from OpenXRay, Heroic, Steam, Lutris, folder searches and user folders |
 | `zone_launcher/fixes.py` | The pre-launch checks and their fixes |
 | `zone_launcher/engine.py` | Finds and launches `xr_3da`, reads crash logs |
+| `zone_launcher/files.py` | Lists a game folder and where each file comes from |
 | `zone_launcher/window.py` | The GTK4/libadwaita window |
+| `zone_launcher/files_ui.py` | The file browser |
 | `flatpak/` | Flatpak manifest (builds OpenXRay + the launcher) |
