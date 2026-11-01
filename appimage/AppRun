@@ -22,9 +22,10 @@ export GI_TYPELIB_PATH="$HERE/usr/lib/x86_64-linux-gnu/girepository-1.0"
 # Our GLib, not the host's GIO plugins (gvfs), which are built for a newer GLib.
 export GIO_MODULE_DIR="$HERE/usr/lib/x86_64-linux-gnu/gio/modules"
 export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-# Software rendering for the launcher window keeps GTK from loading the host's GL driver next to
-# our bundled libraries. The game itself renders with the host driver as usual.
-export GSK_RENDERER="${GSK_RENDERER:-cairo}"
+# The launcher window renders on the GPU with the host's graphics driver, like the game: no GL,
+# EGL, Vulkan driver or libdrm is bundled, and the libraries the driver shares with ours are
+# ABI-compatible. GTK falls back to software rendering by itself if the GPU renderer can't start;
+# GSK_RENDERER=cairo forces it.
 export ZONE_LAUNCHER_ENGINE="$HERE/usr/bin/xr_3da"
 # Bundled tools (7-Zip for unpacking mods) before the system's.
 export PATH="$HERE/usr/bin:$PATH"
