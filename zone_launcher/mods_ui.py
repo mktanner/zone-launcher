@@ -11,7 +11,7 @@ from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
 from . import downloads, files, mods  # noqa: E402
 from .games import GAMES  # noqa: E402
-from .moddb_ui import BrowsePage, Downloads, open_uri, pending_row  # noqa: E402
+from .moddb_ui import BrowsePage, Downloads, installed_message, open_uri, pending_row  # noqa: E402
 
 
 class ModsDialog(Adw.PreferencesDialog):
@@ -105,7 +105,13 @@ class ModsDialog(Adw.PreferencesDialog):
         else:
             subtitle = f"Installed {mod.installed} from {mod.archive}"
         subtitle += f" · {files.human_size(mods.disk_size(self.game, mod))}"
+        if mod.engine:
+            subtitle = f"Needs its own engine: probably won't work · {subtitle}"
         row = Adw.ExpanderRow(title=mod.name, use_markup=False, subtitle=subtitle)
+        if mod.engine:
+            row.add_suffix(Gtk.Image(icon_name="dialog-warning-symbolic", valign=Gtk.Align.CENTER,
+                                     tooltip_text="Made for its own modified engine, which OpenXRay replaces. "
+                                                  "Expand for details."))
         delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Delete this mod", valign=Gtk.Align.CENTER,
                             css_classes=["flat"])
         delete.connect("clicked", lambda *_: self.on_remove(mod))
@@ -251,9 +257,7 @@ class ModsDialog(Adw.PreferencesDialog):
         def work():
             try:
                 mod = mods.install(self.game, source)
-                message = f"Installed {mod.name}"
-                if mod.warnings:
-                    message += " (with warnings; expand it to see them)"
+                message = installed_message(mod)
             except (mods.ModError, OSError) as e:
                 message = f"Couldn't install {source.name}: {e}"
             GLib.idle_add(done, message)

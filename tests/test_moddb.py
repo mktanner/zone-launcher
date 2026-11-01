@@ -72,6 +72,21 @@ class ParseTests(unittest.TestCase):
         self.assertEqual(addon.summary, "")
         self.assertEqual(moddb.parse_list(LIST_PAGE, "addons")[1].kind, "addon")
 
+    def test_sort_orders(self):
+        self.assertEqual(moddb.list_url("cs", "mods"), "https://www.moddb.com/games/stalker-clear-sky/mods")
+        self.assertEqual(moddb.list_url("cs", "mods", "popular"),
+                         "https://www.moddb.com/games/stalker-clear-sky/mods?sort=visitstotal-desc")
+        self.assertEqual(moddb.list_url("soc", "addons", "added"),
+                         "https://www.moddb.com/games/stalker/addons?sort=date-desc")
+        for key, *_rest in moddb.SORTS:
+            for kind in moddb.KINDS:
+                self.assertTrue(moddb.allowed(moddb.list_url("cop", kind, key)))
+        popular = LIST_PAGE.replace(
+            '<span class="date">\n      <time datetime="2026-10-29T12:13:07+00:00">Oct 29 2026</time>  </span>',
+            '<span class="date"><span title="57 visits today" class="topsiteup">241</span></span>')
+        mod = moddb.parse_list(popular, "mods")[0]
+        self.assertEqual((mod.stat, mod.updated), ("Rank 241 on ModDB, 57 visits today", ""))
+
     def test_downloads_page(self):
         self.assertEqual(moddb.parse_mod_name(DOWNLOADS_PAGE), "Zone Overhaul - ENGLISH")
         [fix] = moddb.parse_list(DOWNLOADS_PAGE, "files")
@@ -84,6 +99,7 @@ class ParseTests(unittest.TestCase):
         self.assertIn("OGSR", moddb.compat_hint("Weapon pack for OGSR 1.0.11"))
         self.assertIn("Anomaly", moddb.compat_hint("S.T.A.L.K.E.R. Anomaly 1.5.3 weapon pack"))
         self.assertIn("GAMMA", moddb.compat_hint("Fix for STALKER GAMMA"))
+        self.assertIn("GAMMA", moddb.compat_hint("An addon for S.T.A.L.K.E.R. G.A.M.M.A."))
         self.assertIsNone(moddb.compat_hint("Removes the anomaly detector's beeping"))
         self.assertIsNone(moddb.compat_hint("Better gamma and brightness"))
         self.assertIsNone(moddb.compat_hint("Join the Monolith faction and fight in the Zone"))
@@ -118,6 +134,8 @@ class ParseTests(unittest.TestCase):
         self.assertTrue(moddb.allowed("https://www.moddb.com/mods/x/downloads"))
         self.assertTrue(moddb.allowed("https://media.moddb.com/images/x.png"))
         self.assertFalse(moddb.allowed("https://www.moddb.com/games/stalker/mods?sort=rating"))
+        self.assertTrue(moddb.allowed("https://www.moddb.com/games/stalker/mods?sort=ranktoday-asc"))
+        self.assertFalse(moddb.allowed("https://www.moddb.com/games/stalker/mods?sort=id-desc&page=2"))
         self.assertFalse(moddb.allowed("http://www.moddb.com/mods/x"))
         self.assertFalse(moddb.allowed("https://evil.example/mods/x"))
         with self.assertRaises(moddb.ModDBError):

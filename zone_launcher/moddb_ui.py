@@ -119,6 +119,13 @@ def size_label(url: str) -> Gtk.Label:
     return label
 
 
+def installed_message(mod: mods.Mod, site: str = "") -> str:
+    where = f" from {site}" if site else ""
+    if mod.engine:
+        return f"Installed {mod.name}{where}, switched off: it needs its own engine"
+    return f"Installed {mod.name}{where}" + (" (with warnings; expand it to see them)" if mod.warnings else "")
+
+
 def installed_urls(game: str) -> set[str]:
     urls = set()
     for mod in mods.list_mods(game):
@@ -193,7 +200,7 @@ class Downloads:
             if error:
                 self.notify(f"Couldn't install {pending.title}: {error}")
             else:
-                self.notify(f"Installed {mod.name} from ModDB" + (" (with warnings)" if mod.warnings else ""))
+                self.notify(installed_message(mod, "ModDB"))
 
         def run():
             try:
@@ -298,6 +305,7 @@ class ListPage(Adw.NavigationPage):
         subtitle = " · ".join(filter(None, [
             f"Check first: it {hint}." if hint else "",
             item.category,
+            item.stat,
             f"Updated {item.updated}" if item.updated and item.kind != "file" else item.updated,
             item.summary]))
         row = Adw.ActionRow(title=item.title, subtitle=subtitle, use_markup=False, title_lines=2, subtitle_lines=3)
@@ -330,28 +338,35 @@ class ListPage(Adw.NavigationPage):
 
 
 class BrowsePage(ListPage):
-    """A game's mods or addons on ModDB, most recently updated first."""
+    """A game's mods or addons on ModDB, in one of moddb.SORTS' orders."""
+
+    # The order last picked, kept while the launcher runs.
+    sort = "updated"
 
     def __init__(self, dialog, game: str, downloads_: Downloads):
         self.dialog, self.game, self.downloads = dialog, game, downloads_
         self.kind = "mods"
         self.items: list[moddb.Item] = []
-        super().__init__("ModDB", "ModDB's 30 most recently updated. Looking for something older?",
-                         "Search on ModDB", self.search_on_site)
+        super().__init__("ModDB", "", "Search on ModDB", self.search_on_site)
 
         kinds = Gtk.DropDown.new_from_strings(["Mods", "Addons"])
         kinds.set_tooltip_text("Whole mods, or small addons and fixes")
         kinds.connect("notify::selected", self.on_kind)
         self.header.set_title_widget(kinds)
         self.header.pack_end(self.button("adw-external-link-symbolic", "Open this list on ModDB",
-                                         lambda _b: open_uri(self, moddb.list_url(game, self.kind))))
+                                         lambda _b: open_uri(self, moddb.list_url(game, self.kind, self.sort))))
 
         self.search = Gtk.SearchEntry(placeholder_text="Filter, or paste a link to a ModDB mod or file",
                                       hexpand=True)
         self.search.connect("search-changed", self.on_search)
         self.search.connect("activate", lambda *_: self.open_link())
-        entry_box = Gtk.Box(margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
+        entry_box = Gtk.Box(spacing=6, margin_start=12, margin_end=12, margin_top=6, margin_bottom=6)
         entry_box.append(self.search)
+        sorts = Gtk.DropDown.new_from_strings([label for _key, label, *_values in moddb.SORTS])
+        sorts.set_tooltip_text("Order of the list")
+        sorts.set_selected([key for key, *_rest in moddb.SORTS].index(self.sort))
+        sorts.connect("notify::selected", self.on_sort)
+        entry_box.append(sorts)
         self.view.add_top_bar(entry_box)
 
         self.link_row = Adw.ActionRow(title="Open this ModDB link", activatable=True, visible=False)
@@ -369,11 +384,13 @@ class BrowsePage(ListPage):
         self.load()
 
     def fetch(self):
-        return moddb.browse(self.game, self.kind)
+        return moddb.browse(self.game, self.kind, self.sort)
 
     def fill(self):
         self.list.remove_all()
         installed = installed_urls(self.game)
+        label = next(label for key, label, *_values in moddb.SORTS if key == self.sort).lower()
+        self.footer.set_label(f"{len(self.items)} {self.kind} from ModDB, {label}. Looking for something else?")
         for item in self.items:
             row = self.item_row(item, installed)
             if item.kind == "mod":
@@ -391,6 +408,10 @@ class BrowsePage(ListPage):
 
     def on_kind(self, dropdown, _pspec):
         self.kind = moddb.KINDS[dropdown.get_selected()]
+        self.load()
+
+    def on_sort(self, dropdown, _pspec):
+        BrowsePage.sort = moddb.SORTS[dropdown.get_selected()][0]
         self.load()
 
     def on_search(self, _entry):

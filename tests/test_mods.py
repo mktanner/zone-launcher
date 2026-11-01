@@ -1,3 +1,4 @@
+import json
 import os
 import tempfile
 import unittest
@@ -55,7 +56,7 @@ class ModTests(unittest.TestCase):
             "gamedata/scripts/new.script": b"new",
             "patches/xpatch_11.db": b"db11",
             "!addons/bigger cells/patches/xpatch_12.db": b"db12",
-            "bin/xrGame.dll": b"windows",
+            "bin/BugTrap.dll": b"windows",
             "read me/FAQ.txt": b"faq",
         }))
 
@@ -67,6 +68,36 @@ class ModTests(unittest.TestCase):
         self.assertEqual(mod.components[0].archives, ["patches/xpatch_11.db"])
         self.assertTrue(any("bin/" in w for w in mod.warnings))
         self.assertEqual([m.id for m in mods.list_mods("cs")], [mod.id])
+
+    def test_mod_with_its_own_engine_is_flagged_and_starts_off(self):
+        mod = mods.install("cs", self.make_mod("Engine Mod", {
+            "gamedata/configs/system.ltx": b"needs its engine",
+            "bin/xrGame.dll": b"windows", "bin/xrEngine.exe": b"windows",
+        }))
+        self.assertEqual(mod.engine, ["bin/xrEngine.exe", "bin/xrGame.dll"])
+        self.assertIn("Ships its own engine (bin/xrEngine.exe, bin/xrGame.dll)", mod.warnings[0])
+        self.assertFalse(any(w.startswith("Includes Windows engine files") for w in mod.warnings))
+        self.assertEqual(mod.enabled, [])  # would most likely crash the game
+        self.assertEqual(mods.engine_mods("cs"), [])
+
+        mods.set_enabled("cs", mod.id, [""])
+        self.assertEqual([m.id for m in mods.engine_mods("cs", unconfirmed=True)], [mod.id])
+        mods.confirm_engine_mods("cs", [mod.id])
+        self.assertEqual(mods.engine_mods("cs", unconfirmed=True), [])
+        self.assertEqual([m.id for m in mods.engine_mods("cs")], [mod.id])  # still behind a crash
+
+    def test_mods_installed_before_engine_checks_are_checked_once(self):
+        mod = mods.install("cs", self.make_mod("Old", {"gamedata/a.ltx": b"a", "bin/xrGame.dll": b"w"}))
+        folder = mods.library_dir("cs") / mod.id
+        data = json.loads((folder / "mod.json").read_text())
+        data.pop("engine")
+        data["warnings"] = ["Includes Windows engine files (bin/), which were skipped: ..."]
+        (folder / "mod.json").write_text(json.dumps(data))
+        [old] = mods.list_mods("cs")
+        self.assertEqual(old.engine, ["bin/xrGame.dll"])
+        self.assertEqual(len(old.warnings), 1)
+        self.assertIn("Ships its own engine", old.warnings[0])
+        self.assertEqual(json.loads((folder / "mod.json").read_text())["engine"], ["bin/xrGame.dll"])
 
     def test_compose_overlays_mod_and_disabling_restores_the_game(self):
         mod = self.abr_like()

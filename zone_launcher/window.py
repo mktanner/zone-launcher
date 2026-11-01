@@ -576,6 +576,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         install = self.selected_install(key)
         if not install or not self.engine:
             return
+        if risky := mods.engine_mods(key, unconfirmed=True):
+            self.confirm_engine_mods(key, risky)
+            return
         run, setup_issue = setup.plan(install)
         if setup_issue:
             self.apply_fixes(install, [setup_issue], then=lambda: self.on_play(None, key))
@@ -591,6 +594,36 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.apply_fixes(install, pending, then=lambda: self.start_game(run))
         else:
             self.start_game(run)
+
+    def confirm_engine_mods(self, key: str, risky: list[mods.Mod]):
+        """Before playing with mods made for their own engine: they'd most likely crash the game."""
+        names = ", ".join(m.name for m in risky)
+        one = len(risky) == 1
+        dialog = Adw.AlertDialog(
+            heading=f"{names} probably won't work",
+            body=f"{'It ships' if one else 'They ship'} {'its' if one else 'their'} own Windows engine, which "
+                 "OpenXRay replaces. Mods like this are made for that engine, so the game will most likely "
+                 "crash while loading.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("anyway", "Play Anyway")
+        dialog.add_response("off", f"Switch {'It' if one else 'Them'} Off and Play")
+        dialog.set_response_appearance("off", Adw.ResponseAppearance.SUGGESTED)
+        dialog.set_default_response("off")
+        dialog.set_close_response("cancel")
+
+        def response(_d, answer):
+            if answer == "off":
+                for mod in risky:
+                    mods.set_enabled(key, mod.id, [])
+                self.refresh()
+            elif answer == "anyway":
+                mods.confirm_engine_mods(key, [m.id for m in risky])  # don't ask about them again
+            else:
+                return
+            self.on_play(None, key)
+
+        dialog.connect("response", response)
+        dialog.present(self)
 
     def start_game(self, install: detect.Install):
         started = time.time()
@@ -645,7 +678,13 @@ class LauncherWindow(Adw.ApplicationWindow):
         summary = engine.crash_summary(log.read_text(errors="replace"))
         if not summary:
             return
-        dialog = Adw.AlertDialog(heading=f"{GAMES[install.game].title} crashed", body="The log says:")
+        body = "The log says:"
+        if suspects := mods.engine_mods(install.game):
+            names = ", ".join(m.name for m in suspects)
+            one = len(suspects) == 1
+            body = (f"{names} probably caused this: {'it ships its' if one else 'they ship their'} own engine, "
+                    f"which OpenXRay replaces. Switch {'it' if one else 'them'} off in Mods. The log says:")
+        dialog = Adw.AlertDialog(heading=f"{GAMES[install.game].title} crashed", body=body)
         text = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
                             top_margin=8, bottom_margin=8, left_margin=8, right_margin=8)
         text.get_buffer().set_text(summary)

@@ -1,9 +1,11 @@
 """Browse ModDB: each game's mod and addon lists, a mod's files, and the details of one file.
 
-Only pages a visitor's browser would load are fetched, and only ones robots.txt allows: the first page
-of a list (later pages and query strings are off limits), including a mod's downloads, and a file's
-own page. Downloading is left to the user's browser, since ModDB doesn't allow automated downloads.
-Everything is cached, so browsing back and forth doesn't fetch pages again.
+Only pages a visitor's browser would load are fetched, one at a time as the user asks for them: the
+first page of a list (in one of SORTS' orders), a mod's downloads, and a file's own page. Sorted lists
+use a ?sort= link, which robots.txt asks crawlers not to fetch; the launcher fetches one when the user
+picks that order, like a browser would, never page after page. Downloading is left to the user's
+browser, since ModDB doesn't allow automated downloads. Everything is cached, so browsing back and
+forth doesn't fetch pages again.
 """
 
 import hashlib
@@ -28,6 +30,14 @@ PAGE_TTL = 60 * 60
 DETAILS_TTL = 24 * 60 * 60
 IMAGE_TTL = 7 * 24 * 60 * 60
 KINDS = ("mods", "addons")
+# (key, label, ?sort= value for mods, for addons). "" is ModDB's own order for that list.
+SORTS = [
+    ("updated", "Recently updated", "", ""),
+    ("popular", "Popular all time", "visitstotal-desc", "visitstotal-desc"),
+    ("today", "Popular today", "ranktoday-asc", "ranktoday-asc"),
+    ("added", "Newly added", "id-desc", "date-desc"),
+]
+SORT_VALUES = {value for _key, _label, *values in SORTS for value in values if value}
 
 # Words in a mod's name or summary that suggest it won't work on OpenXRay with the original game:
 # (pattern, what to tell the user). Only a hint; the mod's page has the facts.
@@ -35,7 +45,7 @@ COMPAT_HINTS = [
     # "Anomaly" alone is also the in-game hazard ("anomaly detector"), so only the game's own names.
     (r"\b(s\.?t\.?a\.?l\.?k\.?e\.?r\.?:? anomaly|anomaly 1\.\d|(for|on|requires) anomaly|anomaly[- ]based"
      r"|anomaly (mod|modpack|addon))\b", "mentions Anomaly, a separate game on its own engine"),
-    (r"(?-i:\bGAMMA\b)", "mentions GAMMA, a modpack for Anomaly (a separate game)"),
+    (r"(?-i:\bGAMMA\b|G\.A\.M\.M\.A)", "mentions GAMMA, a modpack for Anomaly (a separate game)"),
     (r"\bstand-?alone\b", "says it's standalone, so it may be a separate game rather than a mod"),
     (r"\bogsr\b", "mentions OGSR, an engine of its own"),
     (r"\bogse\b", "mentions OGSE, which ships its own engine"),
@@ -61,6 +71,8 @@ class Item:
     kind: str
     # ModDB's category: "Full Version", "Patch", "Music"... (files and addons only).
     category: str = ""
+    # In a list sorted by popularity, ModDB shows the rank and today's visits instead of a date.
+    stat: str = ""
 
     def compat_hint(self) -> str | None:
         return compat_hint(f"{self.title} {self.summary}")
@@ -87,7 +99,10 @@ def cache_dir() -> Path:
 
 def allowed(url: str) -> bool:
     parts = urlsplit(url)
-    return parts.scheme == "https" and parts.hostname in HOSTS and not parts.query
+    if parts.scheme != "https" or parts.hostname not in HOSTS:
+        return False
+    # No query strings, except a list's sort order.
+    return not parts.query or (parts.query.startswith("sort=") and parts.query[5:] in SORT_VALUES)
 
 
 def fetch(url: str, ttl: int = PAGE_TTL) -> bytes:
@@ -120,13 +135,16 @@ def fetch(url: str, ttl: int = PAGE_TTL) -> bytes:
 
 # ----- addresses -----------------------------------------------------------------------------------
 
-def list_url(game: str, kind: str) -> str:
-    return f"{SITE}/games/{GAMES[game].moddb}/{kind}"
+def list_url(game: str, kind: str, sort: str = "updated") -> str:
+    """A game's mods or addons, in the order of one of SORTS."""
+    value = next((mods if kind == "mods" else addons for key, _l, mods, addons in SORTS if key == sort), "")
+    return f"{SITE}/games/{GAMES[game].moddb}/{kind}" + (f"?sort={value}" if value else "")
 
 
 def search_url(game: str, kind: str, words: str) -> str:
     """ModDB's own search of a game's list, for the user's browser."""
-    return f"{list_url(game, kind)}?filter=t&kw={quote_plus(words)}" if words else list_url(game, kind)
+    base = f"{SITE}/games/{GAMES[game].moddb}/{kind}"
+    return f"{base}?filter=t&kw={quote_plus(words)}" if words else base
 
 
 def all_files_url(mod_url: str) -> str:
@@ -173,6 +191,7 @@ def parse_list(page: str, kind: str) -> list[Item]:
         updated = re.search(r'<span class="date">\s*<time datetime="([^"T]+)', block)
         summary = re.search(r"<p>(.*?)</p>", block, re.S)
         category = re.search(r'<span class="subheading">(.*?)</span>', block, re.S)
+        stat = re.search(r'<span class="date">\s*<span title="([^"]*)"[^>]*>\s*([\d,]+)', block)
         items.append(Item(
             title=_text(link[2]),
             url=SITE + link[1] if link[1].startswith("/") else link[1],
@@ -182,6 +201,7 @@ def parse_list(page: str, kind: str) -> list[Item]:
             kind={"addons": "addon", "files": "file"}.get(kind, "mod"),
             # A mod's subheading is its release date and genre, not a category.
             category=re.sub(r"\d+ comments?", "", _text(category[1])).strip() if category and kind != "mods" else "",
+            stat=f"Rank {stat[2]} on ModDB, {html.unescape(stat[1])}" if stat else "",
         ))
     return items
 
@@ -215,9 +235,9 @@ def parse_details(page: str, url: str) -> Details:
 
 # ----- what the UI asks for ------------------------------------------------------------------------
 
-def browse(game: str, kind: str) -> list[Item]:
-    """The first page of a game's mods or addons, most recently updated first."""
-    return parse_list(fetch(list_url(game, kind)).decode("utf-8", "replace"), kind)
+def browse(game: str, kind: str, sort: str = "updated") -> list[Item]:
+    """The first page (30) of a game's mods or addons, in the order of one of SORTS."""
+    return parse_list(fetch(list_url(game, kind, sort)).decode("utf-8", "replace"), kind)
 
 
 def files(mod_url: str) -> tuple[str, list[Item]]:

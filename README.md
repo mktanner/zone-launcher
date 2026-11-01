@@ -76,8 +76,8 @@ yourself, see [Building](#building).
 
 Each game's card has a **Mods** button that opens its mod list.
 
-- **Browse ModDB…** lists the game's 30 most recently updated mods or addons on ModDB, with
-  pictures and a filter. Opening a mod shows its newest files (up to 30) with their type (full
+- **Browse ModDB…** lists 30 of the game's mods or addons on ModDB, recently updated, popular all
+  time, popular today or newly added, with pictures and a filter. Opening a mod shows its newest files (up to 30) with their type (full
   version, patch...) and download size. **Download** looks up the file's
   name, size and MD5 on its ModDB page, then opens ModDB's download page in your browser (ModDB
   doesn't allow automated downloads, so the launcher never downloads files itself). The launcher
@@ -88,14 +88,20 @@ Each game's card has a **Mods** button that opens its mod list.
 - **Not every ModDB mod works here.** Mods for the original game usually do; standalone games such
   as Anomaly (and GAMMA on top of it), and mods that need their own engine (OGSR, OGSE, X-Ray
   Monolith, or anything that replaces the game's `bin/` files) don't run on OpenXRay. The ModDB
-  pages say so, and entries whose name or summary mentions one of these get a warning. A mod that
-  turns out to ship its own programs and `fsgame.ltx` gets a warning after installing.
+  pages say so, and entries whose name or summary mentions one of these get a warning.
+- **Mods that ship their own engine** (`xrGame.dll`, `xrEngine.exe`, `xrCore.dll` or `xr_3da.exe`,
+  usually in a `bin/` folder) are made for that modified Windows engine, which OpenXRay replaces; their
+  files usually depend on it (ABR CS MOD Final, for one, crashes loading objects). The launcher marks
+  them in the mod list, installs them switched off, asks before playing with one switched on (switch it
+  off, or play anyway and don't be asked again), and names it if the game then crashes.
 - For anything not in the list, paste a link to a ModDB mod (to see its files) or to a file or
   addon (to download it) into the filter, or use **Search on ModDB** and **All files on ModDB**,
   which open ModDB in your browser.
-- The launcher only reads ModDB pages that its `robots.txt` allows (a list's first page, a mod's
-  downloads page, a file's page), identifies itself in its User-Agent, and caches lists for an
-  hour, file pages for a day and pictures for a week (`~/.cache/zone-launcher/moddb/`). Download
+- The launcher reads only the ModDB pages you ask for, one at a time, as a browser would: a list's
+  first page, a mod's downloads page, a file's page. The popular and newly added orders are `?sort=`
+  links, which ModDB's `robots.txt` asks crawlers not to fetch; the launcher fetches one only when you
+  pick that order, and never pages through lists. It identifies itself in its User-Agent, and caches
+  lists for an hour, file pages for a day and pictures for a week (`~/.cache/zone-launcher/moddb/`). Download
   sizes come from each file's page, looked up two at a time.
 - **Deleting** a mod (the trash button on its row) removes it from the library and shows how much
   space that frees. If the archive it was installed from is still there, you can move that to the
@@ -104,7 +110,7 @@ Each game's card has a **Mods** button that opens its mod list.
   for the Flatpak, `~/.local/share/zone-launcher/mods/` otherwise). The launcher looks for the folders
   that hold `gamedata/`, `patches/` or `.db` archives: the top-most one is the mod itself (on by
   default), deeper ones such as an `!addons/<option>/` folder become optional parts with their own
-  switch. A Windows `bin/` folder (a modified original engine) is skipped with a warning.
+  switch. A Windows `bin/` folder is skipped (see the note on mods with their own engine above).
 - **On Play**, the game folder's `gamedata/` and `patches/` are rebuilt from the original install,
   then every enabled part is linked in, in load order: loose files into `gamedata/` (higher in the
   list wins), archives into `patches/` (named so they load after the game's own patches). Nothing is

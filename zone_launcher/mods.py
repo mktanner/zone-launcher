@@ -21,6 +21,11 @@ from pathlib import Path
 from .detect import MARKER, Install
 
 ARCHIVE_SUFFIXES = (".zip", ".7z", ".rar")
+# Files of the X-Ray engine itself. A mod that ships them was made for its own modified engine.
+ENGINE_FILES = {"xrgame.dll", "xrengine.exe", "xr_3da.exe", "xrcore.dll"}
+ENGINE_WARNING = ("Ships its own engine ({files}). Mods like this are made for their modified Windows "
+                  "engine, which OpenXRay replaces, so it will most likely crash the game or not work. "
+                  "If the mod's instructions say to copy a bin folder, it won't run here.")
 # Archives in patches/ load in name order, after the game's own xpatch_*.db.
 PATCH_PREFIX = "zz_mod_"
 
@@ -51,6 +56,8 @@ class Mod:
     size: int = 0
     # The archive it was installed from, so removing the mod can offer to delete that too.
     archive_path: str = ""
+    # Engine files it ships (see ENGINE_FILES); None for mods installed before this was checked.
+    engine: list[str] | None = None
     # Filled from the game's state file, not stored in mod.json.
     enabled: list[str] = field(default_factory=list)
 
@@ -82,6 +89,7 @@ def _load_state(game: str) -> dict:
         state = {}
     state.setdefault("order", [])  # lowest priority first; later mods win conflicts
     state.setdefault("enabled", {})  # mod id -> enabled component paths
+    state.setdefault("engine_ok", [])  # mods with their own engine the user plays with anyway
     return state
 
 
@@ -102,6 +110,10 @@ def _load_mod(folder: Path) -> Mod | None:
     return Mod(**data)
 
 
+def _save_mod(folder: Path, mod: Mod) -> None:
+    (folder / "mod.json").write_text(json.dumps({k: v for k, v in asdict(mod).items() if k != "enabled"}, indent=2))
+
+
 def list_mods(game: str) -> list[Mod]:
     """Installed mods in load order (lowest priority first)."""
     state = _load_state(game)
@@ -110,9 +122,38 @@ def list_mods(game: str) -> list[Mod]:
     for mod_id in state["order"]:
         mod = _load_mod(lib / mod_id)
         if mod:
+            if mod.engine is None:
+                _check_engine(lib / mod_id, mod)
             mod.enabled = list(state["enabled"].get(mod_id, []))
             mods.append(mod)
     return mods
+
+
+def _check_engine(folder: Path, mod: Mod) -> None:
+    """Look for engine files in a mod installed before they were looked for, once."""
+    mod.engine = find_engine_files(folder)
+    if mod.engine:
+        # Its old warning about skipped bin/ files undersold it.
+        mod.warnings = [w for w in mod.warnings if not w.startswith("Includes Windows engine files")]
+        mod.warnings.insert(0, ENGINE_WARNING.format(files=", ".join(mod.engine)))
+    try:
+        _save_mod(folder, mod)
+    except OSError:
+        pass
+
+
+def engine_mods(game: str, unconfirmed: bool = False) -> list[Mod]:
+    """Switched-on mods that ship their own engine; with unconfirmed, only those the user hasn't
+    chosen to play with anyway."""
+    confirmed = set(_load_state(game)["engine_ok"]) if unconfirmed else set()
+    return [m for m in list_mods(game) if m.is_enabled and m.engine and m.id not in confirmed]
+
+
+def confirm_engine_mods(game: str, mod_ids: list[str]) -> None:
+    """The user plays with these anyway; don't ask about them again."""
+    state = _load_state(game)
+    state["engine_ok"] = sorted(set(state["engine_ok"]) | set(mod_ids))
+    _save_state(game, state)
 
 
 # ----- installing ---------------------------------------------------------------------------------
@@ -189,15 +230,22 @@ def find_components(root: Path) -> list[Component]:
     return found
 
 
-def _warnings(root: Path) -> list[str]:
+def find_engine_files(root: Path) -> list[str]:
+    """The engine files a mod ships (relative paths), if any."""
+    found = sorted(str(p.relative_to(root)) for p in root.rglob("*")
+                   if p.name.lower() in ENGINE_FILES and p.is_file())
+    return found[:4]
+
+
+def _warnings(root: Path, engine: list[str]) -> list[str]:
     warnings = []
-    has_exe = any(p.suffix.lower() == ".exe" for p in root.rglob("*") if p.is_file())
     has_fsgame = any(p.name.lower() == "fsgame.ltx" for p in root.rglob("*"))
-    if has_exe and has_fsgame:
-        warnings.append("Looks like a standalone game or a mod built on its own engine (it has its own "
-                        "programs and fsgame.ltx), not a mod for the original game. It probably won't "
-                        "work; check the mod's page for what it needs.")
-    if any(p.is_dir() and p.name.lower() == "bin" for p in root.rglob("*")):
+    if engine:
+        warnings.append(ENGINE_WARNING.format(files=", ".join(engine)))
+        if has_fsgame:
+            warnings.append("It also has its own fsgame.ltx, so it may be a standalone game rather than a "
+                            "mod for the original one.")
+    elif any(p.is_dir() and p.name.lower() == "bin" for p in root.rglob("*")):
         warnings.append("Includes Windows engine files (bin/), which were skipped: OpenXRay replaces "
                         "the game's engine. Features that depend on a modified engine won't work.")
     if any(p.name.lower() == "fsgame.ltx" for p in root.rglob("*")):
@@ -234,10 +282,10 @@ def install(game: str, source: Path, name: str | None = None, origin: dict[str, 
             raise ModError(f"{source.name} has no gamedata/ or patches/ folder, so it doesn't look "
                            "like a mod for this game.")
         size = sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
-        mod = Mod(mod_id, name, source.name, date.today().isoformat(), components, _warnings(root),
-                  dict(origin or {}), size, "" if source.is_dir() else str(source.resolve()))
-        (root / "mod.json").write_text(json.dumps(
-            {k: v for k, v in asdict(mod).items() if k != "enabled"}, indent=2))
+        engine = find_engine_files(root)
+        mod = Mod(mod_id, name, source.name, date.today().isoformat(), components, _warnings(root, engine),
+                  dict(origin or {}), size, "" if source.is_dir() else str(source.resolve()), engine)
+        _save_mod(root, mod)
         final = lib / mod_id
         shutil.rmtree(final, ignore_errors=True)
         root.rename(final)
@@ -247,8 +295,9 @@ def install(game: str, source: Path, name: str | None = None, origin: dict[str, 
     state = _load_state(game)
     if mod_id not in state["order"]:
         state["order"].append(mod_id)
-    # The shallowest part is the mod itself; deeper ones are options the user turns on.
-    state["enabled"][mod_id] = [components[0].path]
+    # The shallowest part is the mod itself; deeper ones are options the user turns on. A mod made for
+    # its own engine starts switched off, since it would most likely crash the game.
+    state["enabled"][mod_id] = [] if engine else [components[0].path]
     _save_state(game, state)
     mod.enabled = state["enabled"][mod_id]
     return mod
