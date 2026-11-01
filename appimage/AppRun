@@ -19,6 +19,8 @@ export PYTHONHOME="$HERE/usr"
 export PYTHONPATH="$HERE/usr/lib/python3/dist-packages"
 export PYTHONNOUSERSITE=1 PYTHONDONTWRITEBYTECODE=1
 export GI_TYPELIB_PATH="$HERE/usr/lib/x86_64-linux-gnu/girepository-1.0"
+# Our GLib, not the host's GIO plugins (gvfs), which are built for a newer GLib.
+export GIO_MODULE_DIR="$HERE/usr/lib/x86_64-linux-gnu/gio/modules"
 export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # Software rendering for the launcher window keeps GTK from loading the host's GL driver next to
 # our bundled libraries. The game itself renders with the host driver as usual.

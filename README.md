@@ -32,13 +32,15 @@ You need your own copies of the games. No game files are included.
 - **Resolution and display mode**: fullscreen at your monitor's native resolution by default,
   or borderless/windowed at any common size. Written into the game's `_appdata_/user.ltx` before
   each launch; pick "Use in-game setting" to manage it from the game's own options instead.
+- **One window, no scrolling**: the three games side by side, each with its status, Mods,
+  Details (install, checks and fixes, log) and Play; settings in a bar along the bottom.
 - **Shows why a game crashed**: after a crash it pulls the error out of the OpenXRay log.
 - **Mods**: install mods from zip/7z/rar archives or unpacked folders (button or drag and drop),
   switch them and their optional parts on and off, and set the load order. See below.
 
 ## Mods
 
-Each game card has a **Mods** row; **Manage** opens the game's mod list.
+Each game's card has a **Mods** button that opens its mod list.
 
 - **Installing** unpacks a mod once into the launcher's library (`~/.var/app/<app id>/data/zone-launcher/mods/`
   for the Flatpak, `~/.local/share/zone-launcher/mods/` otherwise). The launcher looks for the folders
