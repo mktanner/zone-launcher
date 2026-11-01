@@ -1,0 +1,47 @@
+From: Zone Launcher
+Subject: [PATCH] Fix light-plane (beam, spider web) transparency on OpenGL
+
+The GL port of model_def_lplanes.vs wrote COLOR0 as a float3 while
+base_lplanes.ps reads it as a float4 and fades by c0.a. GLSL leaves that
+component undefined, so on Mesa/radeonsi the alpha of light-plane meshes
+was whatever the register held: Clear Sky's searchlight beams (and
+spider webs, models_pautina) strobed on and off. Write a float4 with the
+fade in every component, as the DirectX shader does (o.c0 = fade).
+
+---
+diff --git a/res/gamedata/shaders/gl/iostructs/v_model_def_lplanes.h b/res/gamedata/shaders/gl/iostructs/v_model_def_lplanes.h
+index f557fee76..b9c401baa 100644
+--- a/res/gamedata/shaders/gl/iostructs/v_model_def_lplanes.h
++++ b/res/gamedata/shaders/gl/iostructs/v_model_def_lplanes.h
+@@ -4,7 +4,7 @@ out gl_PerVertex { vec4 gl_Position; };
+ struct v2p
+ {
+ 	float2 tc0	; // TEXCOORD0;		// base
+-	float3 c0	; // COLOR0;		// color
++	float4 c0	; // COLOR0;		// color (alpha: view-angle fade)
+ 	float4 hpos	; // SV_Position;
+ };
+ 
+@@ -32,7 +32,7 @@ layout(location = TEXCOORD1)		in float4	v_model_ind		; // (x=m-index0, y=m-index
+ 
+ 
+ layout(location = TEXCOORD0)		out float2	v2p_model_tc0		; // TEXCOORD0;		// base
+-layout(location = COLOR0)		out float3	v2p_model_c0		; // COLOR0;		// color
++layout(location = COLOR0)		out float4	v2p_model_c0		; // COLOR0;		// color
+ 
+ v2p _main ( v_model v );
+ 
+diff --git a/res/gamedata/shaders/gl/model_def_lplanes.vs b/res/gamedata/shaders/gl/model_def_lplanes.vs
+index 0389273c4..ae91e9cd0 100644
+--- a/res/gamedata/shaders/gl/model_def_lplanes.vs
++++ b/res/gamedata/shaders/gl/model_def_lplanes.vs
+@@ -13,7 +13,8 @@ v2p _main (v_model v)
+ 	float3  dir_v 	= normalize		(mul(m_WV,v.P));
+ 	float3 	norm_v 	= normalize 		(mul(m_WV,v.N));
+ 	float 	fade 	= abs			(dot(dir_v,norm_v));
+-	o.c0		= float3(fade);
++	// base_lplanes.ps fades by c0.a; as in the DirectX shader, every component is the fade.
++	o.c0		= float4(fade);
+ 
+ 	return o;
+ }

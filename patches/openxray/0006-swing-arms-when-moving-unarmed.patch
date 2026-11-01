@@ -1,0 +1,60 @@
+From: Zone Launcher
+Subject: [PATCH] Swing the arms when moving with empty hands
+
+With no item in the hands, CActor::g_SetAnimation always played the
+standing torso pose (<base>_torso_0_aim_0), so the third-person body
+kept its arms frozen while the legs walked or ran. That body is what
+casts the player shadow in first person, so the shadow showed frozen
+arms. The stalker animations have moving variants for empty hands
+(_torso_0_aim_2/_aim_3/_escape_0, as for weapon slots); load them as an
+unarmed STorsoWpn and use them while moving, falling back to the
+standing pose when a model lacks them.
+
+---
+diff --git a/src/xrGame/ActorAnimation.cpp b/src/xrGame/ActorAnimation.cpp
+index c3ca7c509..db75d1997 100644
+--- a/src/xrGame/ActorAnimation.cpp
++++ b/src/xrGame/ActorAnimation.cpp
+@@ -147,6 +147,7 @@ void SActorState::CreateClimb(IKinematicsAnimated* K)
+     xr_strcpy(base, "cl");
+     legs_idle = K->ID_Cycle(strconcat(sizeof(buf), buf, base, "_idle_1"));
+     m_torso_idle = K->ID_Cycle(strconcat(sizeof(buf), buf, base, "_torso_0_aim_0"));
++    m_torso_unarmed.Create(K, base, "_0");
+     m_walk.Create(K, base, "_run");
+     m_run.Create(K, base, "_run");
+ 
+@@ -203,6 +204,7 @@ void SActorState::Create(IKinematicsAnimated* K, LPCSTR base)
+     m_torso[12].Create(K, base, "_13");
+ 
+     m_torso_idle = K->ID_Cycle(strconcat(sizeof(buf), buf, base, "_torso_0_aim_0"));
++    m_torso_unarmed.Create(K, base, "_0");
+     m_head_idle = K->ID_Cycle("head_idle_0");
+     jump_begin = K->ID_Cycle(strconcat(sizeof(buf), buf, base, "_jump_begin"));
+     jump_idle = K->ID_Cycle(strconcat(sizeof(buf), buf, base, "_jump_idle"));
+@@ -561,6 +563,13 @@ void CActor::g_SetAnimation(u32 mstate_rl)
+                 }
+             }
+         }
++        else if (!_i && moving_idx != STorsoWpn::eIdle)
++        {
++            // Nothing in the hands: swing the arms while walking, running or sprinting, like the
++            // models' "_torso_0_" animations intend, instead of holding the standing pose (m_torso_idle,
++            // used below if a model has no such animation). The player's shadow showed frozen arms.
++            M_torso = ST->m_torso_unarmed.moving[moving_idx];
++        }
+     }
+ 
+     // XXX: check why 'mid' was unused
+diff --git a/src/xrGame/actor_anim_defs.h b/src/xrGame/actor_anim_defs.h
+index 51ffb6899..50e531d86 100644
+--- a/src/xrGame/actor_anim_defs.h
++++ b/src/xrGame/actor_anim_defs.h
+@@ -55,6 +55,8 @@ struct SActorState
+     SAnimState m_walk;
+     SAnimState m_run;
+     STorsoWpn m_torso[_total_anim_slots_];
++    // Arms with nothing in the hands ("_torso_0_" animations); m_torso_idle is its standing pose.
++    STorsoWpn m_torso_unarmed;
+     MotionID m_torso_idle;
+     MotionID m_head_idle;
+ 

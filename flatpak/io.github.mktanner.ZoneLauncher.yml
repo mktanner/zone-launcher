@@ -51,6 +51,10 @@ modules:
         path: ../patches/openxray/0004-detect-debugger-without-ptrace-traceme.patch
       - type: patch
         path: ../patches/openxray/0005-fix-uninitialized-memory-and-enum-ub.patch
+      - type: patch
+        path: ../patches/openxray/0006-swing-arms-when-moving-unarmed.patch
+      - type: patch
+        path: ../patches/openxray/0007-fix-light-plane-shader-alpha-on-opengl.patch
     cleanup:
       # The launcher replaces OpenXRay's per-game desktop entries.
       - /share/applications

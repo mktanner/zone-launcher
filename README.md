@@ -130,6 +130,13 @@ Fixes not yet in upstream OpenXRay live in `patches/openxray/` and are applied b
   AddressSanitizer/UndefinedBehaviorSanitizer. Physics objects serialized uninitialized
   positions/velocities, the animation blend pool and inventory grid used uninitialized values,
   and the camera/post-process effector enums couldn't legally hold the ids scripts use.
+- `0006-swing-arms-when-moving-unarmed.patch`: with empty hands the body always used the standing
+  arm pose, so the player's shadow walked and ran with frozen arms. Uses the models' empty-handed
+  walk/run/sprint arm animations.
+- `0007-fix-light-plane-shader-alpha-on-opengl.patch`: the OpenGL light-plane shader left its alpha
+  undefined (vertex shader wrote a 3-component color, pixel shader faded by the 4th), so Clear Sky's
+  searchlight beams and spider webs strobed on Mesa. Writes the fade into all four, like the DirectX
+  shader. Found by scanning every OpenGL shader pair for such mismatches; this was the only one.
 
 Note that upstream's `ReleaseMasterGold` build type passes no optimisation flags, so the engine
 is built unoptimised (as a normal upstream build is), which also enables libstdc++ assertions

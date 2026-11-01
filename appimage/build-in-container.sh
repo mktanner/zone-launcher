@@ -39,10 +39,6 @@ fi
 # of Pripyat crashed creating hanging lamps), and it also crashes now and then on this codebase.
 cmake -S "$src" -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=ReleaseMasterGold \
     -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13 > /dev/null
-# GCC's garbage collector marks luabind's deeply nested templates recursively and can overflow the
-# default 8 MB stack ("internal compiler error: Segmentation fault" in ggc_set_mark, or in
-# relocate_ptrs for precompiled headers). When it runs depends on free RAM, so it comes and goes.
-ulimit -s unlimited
 # If the compiler still crashes on a single file now and then, ninja drops the failed output and
 # resumes, so retrying is safe.
 for attempt in 1 2 3; do
