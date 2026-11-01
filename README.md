@@ -63,7 +63,9 @@ yourself, see [Building](#building).
   Details lists each game's languages.
 - **Resolution and display mode**: fullscreen at your monitor's native resolution by default,
   or borderless/windowed at any common size. Written into the game's `_appdata_/user.ltx` before
-  each launch; pick "Use in-game setting" to manage it from the game's own options instead.
+  each launch; pick "Use in-game setting" to manage it from the game's own options instead. In the
+  game, **Alt+Enter** or **F11** switches between fullscreen and a window, and a window can be
+  resized, maximized or tiled freely: the game follows its size.
 - **One window, no scrolling**: the three games side by side, each with its status, Mods,
   Details (install, checks and fixes, log) and Play; settings in a bar along the bottom.
 - **Shows why a game crashed**: after a crash it pulls the error out of the OpenXRay log.
@@ -196,6 +198,16 @@ Fixes not yet in upstream OpenXRay live in `patches/openxray/` and are applied b
   undefined (vertex shader wrote a 3-component color, pixel shader faded by the 4th), so Clear Sky's
   searchlight beams and spider webs strobed on Mesa. Writes the fade into all four, like the DirectX
   shader. Found by scanning every OpenGL shader pair for such mismatches; this was the only one.
+- `0008-smooth-window-and-resolution-changes.patch`: changing resolution or window mode, or the
+  window manager resizing the window (maximizing, tiling, dragging an edge), left the picture
+  cropped or in a corner, the menus mis-scaled and the mouse off. The OpenGL viewport kept its old
+  size after a renderer reset (the main menu never sets one), the render size came from the chosen
+  resolution instead of the window, and every size event reset the renderer and pushed the window
+  back to that resolution, fighting the window manager. Now the renderer follows the window's real
+  size with one reset once resizing stops, a size the window manager picks is kept for the session,
+  window style changes happen in an order window managers (and Wayland) honour, and focus changes
+  no longer unmaximize or minimize the window. Also adds **Alt+Enter** and **F11** to switch
+  between fullscreen and a window.
 
 Note that upstream's `ReleaseMasterGold` build type passes no optimisation flags, so the engine
 is built unoptimised (as a normal upstream build is), which also enables libstdc++ assertions

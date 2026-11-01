@@ -58,6 +58,8 @@ modules:
         path: ../patches/openxray/0006-swing-arms-when-moving-unarmed.patch
       - type: patch
         path: ../patches/openxray/0007-fix-light-plane-shader-alpha-on-opengl.patch
+      - type: patch
+        path: ../patches/openxray/0008-smooth-window-and-resolution-changes.patch
     cleanup:
       # The launcher replaces OpenXRay's per-game desktop entries.
       - /share/applications
