@@ -6,7 +6,8 @@ export DEBIAN_FRONTEND=noninteractive APPIMAGE_EXTRACT_AND_RUN=1
 
 apt-get update -qq
 apt-get install -y -qq --no-install-recommends \
-    build-essential gcc-14 g++-14 cmake ninja-build git ca-certificates curl file patchelf \
+    build-essential gcc-13 g++-13 cmake ninja-build git ca-certificates curl file patchelf 7zip \
+    liblzma-dev zlib1g-dev libbz2-dev libzstd-dev liblz4-dev \
     libsdl2-dev libopenal-dev libogg-dev libvorbis-dev libtheora-dev liblzo2-dev libjpeg-dev \
     libglew-dev libegl-dev libgl-dev \
     python3 python3-gi python3-gi-cairo gir1.2-gtk-4.0 gir1.2-adw-1 libadwaita-1-0 libgtk-4-dev pkg-config \
@@ -17,16 +18,44 @@ commit=$(sed -n 's/^ *commit: *\([0-9a-f]\{40\}\).*/\1/p' /src/flatpak/*.yml | h
 src=/work/xray-16
 [ -d "$src/.git" ] || git clone -q https://github.com/OpenXRay/xray-16.git "$src"
 git config --global --add safe.directory "*"  # /work is owned by the host user
-git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$src" fetch -q origin
-git -C "$src" checkout -q -f "$commit"
-git -C "$src" clean -fdq
-git -C "$src" submodule update -q --init --recursive --force
-for patch in /src/patches/openxray/*.patch; do git -C "$src" apply "$patch"; done
+# Reset and patch the source only when the commit or patches change: re-patching touches headers that
+# nearly every file includes, which would recompile almost the whole engine on every run.
+stamp="$commit $(cat /src/patches/openxray/*.patch | sha256sum | cut -c1-16)"
+if [ "$(cat "$src/.zone-launcher-stamp" 2>/dev/null)" != "$stamp" ]; then
+    git -C "$src" cat-file -e "$commit^{commit}" 2>/dev/null || git -C "$src" fetch -q origin
+    git -C "$src" checkout -q -f "$commit"
+    git -C "$src" clean -fdq
+    git -C "$src" submodule update -q --init --recursive --force
+    for patch in /src/patches/openxray/*.patch; do git -C "$src" apply "$patch"; done
+    # The engine is built unoptimized (see README), so link-time optimization gains nothing and only
+    # doubles the compiler's work and memory use.
+    sed -i 's/set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASEMASTERGOLD ON)/set(CMAKE_INTERPROCEDURAL_OPTIMIZATION_RELEASEMASTERGOLD OFF)/' \
+        "$src/cmake/XRay.Build.cmake"
+    echo "$stamp" > "$src/.zone-launcher-stamp"
+fi
 
-# Same build as the Flatpak: no unity build, no extra flags (see README).
+# Same build as the Flatpak: no unity build, no extra flags (see README). GCC 13, not 14: Ubuntu's
+# GCC 14.2 leaves some luabind template constructors out, which links as a call to address 0 (Call
+# of Pripyat crashed creating hanging lamps), and it also crashes now and then on this codebase.
 cmake -S "$src" -B /work/build -G Ninja -DCMAKE_BUILD_TYPE=ReleaseMasterGold \
-    -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_C_COMPILER=gcc-14 -DCMAKE_CXX_COMPILER=g++-14 > /dev/null
-cmake --build /work/build
+    -DCMAKE_INSTALL_PREFIX=/usr -DCMAKE_C_COMPILER=gcc-13 -DCMAKE_CXX_COMPILER=g++-13 > /dev/null
+# GCC's garbage collector marks luabind's deeply nested templates recursively and can overflow the
+# default 8 MB stack ("internal compiler error: Segmentation fault" in ggc_set_mark, or in
+# relocate_ptrs for precompiled headers). When it runs depends on free RAM, so it comes and goes.
+ulimit -s unlimited
+# If the compiler still crashes on a single file now and then, ninja drops the failed output and
+# resumes, so retrying is safe.
+for attempt in 1 2 3; do
+    cmake --build /work/build ${JOBS:+-j "$JOBS"} && break
+    [ "$attempt" = 3 ] && exit 1
+    echo "Compiler crashed; retrying ($attempt/3)"
+done
+
+# A function the compiler forgot to emit links as a weak symbol at address 0 and crashes when called.
+missing=$(nm -C "$src/bin/x86_64/ReleaseMasterGold/xr_3da" | awk '$1 == "w"' | grep -v -E ' (__gmon_start__|_ITM_|__cxa_|_Jv_|__pthread|__libc_)' || true)
+if [ -n "$missing" ]; then
+    echo "The engine has unresolved functions; it would crash calling them:"; echo "$missing"; exit 1
+fi
 
 app=/work/AppDir
 rm -rf "$app"
@@ -53,6 +82,27 @@ rm -rf "$app"/usr/lib/python3.12/{test,idlelib,tkinter,turtledemo,ensurepip,lib2
 cp -a /usr/lib/python3/dist-packages/{gi,cairo} "$app/usr/lib/python3/dist-packages/"
 cp -a /usr/lib/x86_64-linux-gnu/girepository-1.0 "$app/usr/lib/x86_64-linux-gnu/"
 
+# --- bsdtar and 7-Zip, to unpack mods ------------------------------------------------------------
+# A current libarchive: Ubuntu 24.04's 3.7 (and every 7-Zip up to 26.00) fails on some 7z archives,
+# like ABR's BCJ2 streams, that libarchive 3.8 unpacks correctly. It also reads RAR, which Debian's
+# 7-Zip has removed. Same version as the Flatpak runtime.
+libarchive=libarchive-3.8.9
+[ -s "/work/$libarchive.tar.xz" ] || curl -fsSL -o "/work/$libarchive.tar.xz" \
+    "https://github.com/libarchive/libarchive/releases/download/v3.8.9/$libarchive.tar.xz"
+echo "888c934f9d95648ecb9163dc8e23ab80a476ecb81a8f1154704a227b5b676dde  /work/$libarchive.tar.xz" | sha256sum -c -
+rm -rf "/work/$libarchive" && tar -xf "/work/$libarchive.tar.xz" -C /work
+cmake -S "/work/$libarchive" -B /work/libarchive-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+    -DBUILD_SHARED_LIBS=OFF -DENABLE_TEST=OFF -DENABLE_CPIO=OFF -DENABLE_CAT=OFF -DENABLE_UNZIP=OFF \
+    -DENABLE_OPENSSL=OFF -DENABLE_LIBXML2=OFF -DENABLE_EXPAT=OFF -DENABLE_ACL=OFF -DENABLE_XATTR=OFF > /dev/null
+cmake --build /work/libarchive-build --target bsdtar > /dev/null
+install -Dm755 /work/libarchive-build/bin/bsdtar "$app/usr/bin/bsdtar"
+
+# Ubuntu's /usr/bin/7z is a wrapper; the real binary loads its format plugin (7z.so) from its own folder.
+mkdir -p "$app/usr/lib/7zip"
+cp /usr/lib/7zip/7z /usr/lib/7zip/7z.so "$app/usr/lib/7zip/"
+printf '#!/bin/sh\nexec "$(dirname "$(readlink -f "$0")")/../lib/7zip/7z" "$@"\n' > "$app/usr/bin/7z"
+chmod +x "$app/usr/bin/7z"
+
 # --- Collect shared libraries --------------------------------------------------------------------
 tools=/work/tools
 mkdir -p "$tools"
@@ -71,7 +121,9 @@ while IFS= read -r so; do libs+=(--deploy-deps-only "$so"); done < <(find "$app/
 
 export DEPLOY_GTK_VERSION=4 PATH="$tools:$PATH"
 "$tools/linuxdeploy" --appdir "$app" \
-    --executable "$app/usr/bin/python3" --executable "$app/usr/bin/xr_3da" "${libs[@]}" \
+    --executable "$app/usr/bin/python3" --executable "$app/usr/bin/xr_3da" --executable "$app/usr/bin/bsdtar" \
+    --deploy-deps-only "$app/usr/lib/7zip/7z" --deploy-deps-only "$app/usr/lib/7zip/7z.so" \
+    "${libs[@]}" \
     --desktop-file "$app/usr/share/applications/$id.desktop" \
     --icon-file "$app/usr/share/icons/hicolor/256x256/apps/$id.png" \
     --custom-apprun /src/appimage/AppRun --plugin gtk > /work/linuxdeploy.log

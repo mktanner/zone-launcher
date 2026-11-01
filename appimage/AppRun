@@ -24,6 +24,8 @@ export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 # our bundled libraries. The game itself renders with the host driver as usual.
 export GSK_RENDERER="${GSK_RENDERER:-cairo}"
 export ZONE_LAUNCHER_ENGINE="$HERE/usr/bin/xr_3da"
+# Bundled tools (7-Zip for unpacking mods) before the system's.
+export PATH="$HERE/usr/bin:$PATH"
 
 set_vars=""
 for name in $(compgen -e); do

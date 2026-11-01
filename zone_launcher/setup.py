@@ -16,7 +16,7 @@ from .games import GAMES, identify
 # Never linked: the launcher or the engine owns these here.
 SKIP = {"fsgame.ltx", "fsgame.ltx.original", "_appdata_", "userdocs", MARKER, "gamedata/shaders/gl"}
 # Real folders here, filled with per-file links, so the launcher can add its own files inside.
-REAL_DIRS = {"gamedata", "gamedata/shaders", "localization"}
+REAL_DIRS = {"gamedata", "gamedata/shaders", "localization", "patches"}
 
 
 def target_dir(game: str, home: Path | None = None) -> Path:

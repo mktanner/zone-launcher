@@ -7,4 +7,5 @@ mkdir -p "$root/.appimage-build" "$root/dist"
 docker run --rm \
     -v "$root":/src:ro -v "$root/.appimage-build":/work -v "$root/dist":/dist \
     -e HOST_UID="$(id -u)" -e HOST_GID="$(id -g)" \
+    -e JOBS="${JOBS:-}" \
     ubuntu:24.04 bash /src/appimage/build-in-container.sh

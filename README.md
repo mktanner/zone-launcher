@@ -33,6 +33,25 @@ You need your own copies of the games. No game files are included.
   or borderless/windowed at any common size. Written into the game's `_appdata_/user.ltx` before
   each launch; pick "Use in-game setting" to manage it from the game's own options instead.
 - **Shows why a game crashed**: after a crash it pulls the error out of the OpenXRay log.
+- **Mods**: install mods from zip/7z/rar archives or unpacked folders (button or drag and drop),
+  switch them and their optional parts on and off, and set the load order. See below.
+
+## Mods
+
+Each game card has a **Mods** row; **Manage** opens the game's mod list.
+
+- **Installing** unpacks a mod once into the launcher's library (`~/.var/app/<app id>/data/zone-launcher/mods/`
+  for the Flatpak, `~/.local/share/zone-launcher/mods/` otherwise). The launcher looks for the folders
+  that hold `gamedata/`, `patches/` or `.db` archives: the top-most one is the mod itself (on by
+  default), deeper ones such as an `!addons/<option>/` folder become optional parts with their own
+  switch. A Windows `bin/` folder (a modified original engine) is skipped with a warning.
+- **On Play**, the game folder's `gamedata/` and `patches/` are rebuilt from the original install,
+  then every enabled part is linked in, in load order: loose files into `gamedata/` (higher in the
+  list wins), archives into `patches/` (named so they load after the game's own patches). Nothing is
+  copied, and switching a mod off restores the original files on the next Play.
+- Mods need a game the launcher set up (linked); a copy made by hand is left alone.
+- Unpacking uses libarchive's `bsdtar` (in the Flatpak runtime, bundled in the AppImage), with 7-Zip as
+  a fallback: some 7z archives (ABR's BCJ2 streams, for example) only unpack correctly with libarchive 3.8.
 
 ## Building
 
@@ -74,6 +93,10 @@ libadwaita and the engine's libraries, and uses the system's graphics driver, C+
 usual desktop base libraries (X11/Wayland, ALSA, fontconfig, FreeType, HarfBuzz, FriBidi), which
 AppImages leave out on purpose. Settings live in `~/.config/zone-launcher/`, separate from the
 Flatpak's.
+
+The engine is built with Ubuntu's GCC 13: its GCC 14 crashes now and then on this codebase and once
+left a luabind function out entirely (the build now fails if any function is left unresolved). Set
+`JOBS=<n>` to limit parallel compile jobs.
 
 The AppImage and the Flatpak can both be used on one machine: each re-links the game folders'
 OpenGL shaders to its own engine when you press Play.

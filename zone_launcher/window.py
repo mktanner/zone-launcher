@@ -12,7 +12,8 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk  # noqa: E402
 
-from . import detect, display, engine, fixes, setup  # noqa: E402
+from . import detect, display, engine, fixes, mods, setup  # noqa: E402
+from .mods_ui import ModsDialog  # noqa: E402
 from .config import Config  # noqa: E402
 from .games import GAMES, identify  # noqa: E402
 
@@ -126,6 +127,8 @@ class LauncherWindow(Adw.ApplicationWindow):
             status, sensitive = "Play will fix these first", True
         else:
             status, sensitive = "Ready to play", True
+        group.add(self.build_mods_row(key))
+
         status_row = Adw.ActionRow(title=status)
         status_row.add_prefix(Gtk.Image(icon_name="emblem-ok-symbolic" if not issues else "dialog-information-symbolic"))
         log = engine.latest_log(run)
@@ -144,6 +147,17 @@ class LauncherWindow(Adw.ApplicationWindow):
             play.connect("clicked", self.on_play, key)
         play.set_sensitive(sensitive and self.engine is not None)
         return group
+
+    def build_mods_row(self, key: str) -> Adw.ActionRow:
+        installed = mods.list_mods(key)
+        enabled = sum(m.is_enabled for m in installed)
+        subtitle = f"{len(installed)} installed, {enabled} on" if installed else "None installed"
+        row = Adw.ActionRow(title="Mods", subtitle=subtitle)
+        row.add_prefix(Gtk.Image(icon_name="application-x-addon-symbolic"))
+        manage = Gtk.Button(label="Manage", valign=Gtk.Align.CENTER, sensitive=key not in self.running)
+        manage.connect("clicked", lambda *_: ModsDialog(key, on_change=self.refresh).present(self))
+        row.add_suffix(manage)
+        return row
 
     def build_issue_row(self, install: detect.Install, issue: fixes.Issue) -> Adw.ActionRow:
         row = Adw.ActionRow(title=issue.title, subtitle=issue.detail, use_markup=False)
@@ -309,6 +323,14 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def start_game(self, install: detect.Install):
         started = time.time()
+        try:
+            for warning in mods.compose(install):
+                self.toast(warning)
+        except (mods.ModError, OSError) as e:
+            dialog = Adw.AlertDialog(heading="Couldn't apply mods", body=str(e))
+            dialog.add_response("close", "Close")
+            dialog.present(self)
+            return
         try:
             display.apply(display.user_ltx(install), self.display_resolution(), self.config.window_mode)
         except OSError as e:
