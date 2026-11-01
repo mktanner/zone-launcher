@@ -1,2 +1,2 @@
 APP_ID = "io.github.mktanner.ZoneLauncher"
-VERSION = "0.1.0"
+VERSION = "0.2.0"
