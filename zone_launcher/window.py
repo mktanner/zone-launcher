@@ -14,7 +14,7 @@ gi.require_version("Adw", "1")
 gi.require_version("Pango", "1.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import detect, display, engine, fixes, mods, setup  # noqa: E402
+from . import appearance, detect, display, engine, fixes, mods, setup  # noqa: E402
 from .files_ui import FilesDialog  # noqa: E402
 from .moddb_ui import Downloads  # noqa: E402
 from .mods_ui import ModsDialog  # noqa: E402
@@ -48,6 +48,12 @@ class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
         super().__init__(application=app, title="Zone Launcher", default_width=1120, default_height=600)
         self.config = Config.load()
+        appearance.apply_style(self.config.style)
+        appearance.ensure_icon(self.config.icon, self.config.monochrome_icon)
+        css = Gtk.CssProvider()
+        css.load_from_string(".monochrome { filter: grayscale(1); }")
+        Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
+                                                  Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.engine = engine.find_engine(self.config.engine_override or None)
         self.installs: list[detect.Install] = []
         # Game key -> running engine process, so a game can't be started twice.
@@ -72,7 +78,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         add_btn.connect("clicked", self.on_add_folder)
         self.refresh_btn = Gtk.Button(icon_name="view-refresh-symbolic", tooltip_text="Look for games again")
         self.refresh_btn.connect("clicked", lambda *_: (self.refresh(), self.search_in_background()))
+        options_btn = Gtk.Button(icon_name="emblem-system-symbolic", tooltip_text="Options")
+        options_btn.connect("clicked", lambda *_: self.show_options())
         header.pack_start(add_btn)
+        header.pack_start(options_btn)
         header.pack_end(self.refresh_btn)
         view.add_top_bar(header)
 
@@ -392,6 +401,74 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         choice.connect("notify::selected", chosen)
         return choice
+
+    def show_options(self):
+        dialog = Adw.PreferencesDialog(title="Options", search_enabled=False)
+        page = Adw.PreferencesPage()
+        dialog.add(page)
+
+        look = Adw.PreferencesGroup(title="Appearance")
+        page.add(look)
+        styles = list(appearance.STYLES)
+        style = Adw.ComboRow(title="Style", model=Gtk.StringList.new([label for label, _ in appearance.STYLES.values()]),
+                             selected=styles.index(self.config.style) if self.config.style in styles else 0)
+
+        def style_chosen(row, _pspec):
+            self.config.style = styles[row.get_selected()]
+            self.config.save()
+            appearance.apply_style(self.config.style)
+
+        style.connect("notify::selected", style_chosen)
+        look.add(style)
+
+        icons = Adw.PreferencesGroup(title="Launcher icon",
+                                     description="Shown in the app menu, taskbar and dock, pinned or not. A "
+                                                 "panel may only show the new icon after a restart.")
+        page.add(icons)
+        group = None
+        previews = []
+        for value, label, name in appearance.icon_choices():
+            check = Gtk.CheckButton(active=value == self.config.icon, group=group, valign=Gtk.Align.CENTER)
+            group = group or check
+            row = Adw.ActionRow(title=label, activatable_widget=check)
+            preview = Gtk.Image(icon_name=name, pixel_size=48)
+            previews.append(preview)
+            row.add_prefix(preview)
+            row.add_suffix(check)
+            check.connect("toggled", self.on_icon_chosen, value)
+            icons.add(row)
+        mono = Adw.SwitchRow(title="Monochrome", subtitle="Show the icon in grey",
+                             active=self.config.monochrome_icon)
+
+        def show_previews():
+            for preview in previews:
+                (preview.add_css_class if self.config.monochrome_icon else preview.remove_css_class)("monochrome")
+
+        def mono_toggled(row, _pspec):
+            self.config.monochrome_icon = row.get_active()
+            self.config.save()
+            show_previews()
+            self.apply_icon()
+
+        mono.connect("notify::active", mono_toggled)
+        icons.add(mono)
+        show_previews()
+        dialog.present(self)
+
+    def on_icon_chosen(self, check, value: str):
+        if not check.get_active() or value == self.config.icon:
+            return
+        self.config.icon = value
+        self.config.save()
+        self.apply_icon()
+
+    def apply_icon(self):
+        try:
+            problem = appearance.apply_icon(self.config.icon, self.config.monochrome_icon)
+        except OSError as e:
+            problem = f"Couldn't change the launcher icon: {e.strerror}."
+        if problem:
+            self.toast(problem)
 
     # ----- actions -----------------------------------------------------------------------
 

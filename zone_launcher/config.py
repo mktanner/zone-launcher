@@ -29,6 +29,12 @@ class Config:
     # A key of display.WINDOW_MODES, or "keep".
     window_mode: str = "fullscreen"
     engine_override: str = ""
+    # A key of appearance.STYLES.
+    style: str = "system"
+    # "default" (the launcher's own) or a game key: the icon in the app menu, taskbar and dock.
+    icon: str = "default"
+    # Show that icon in grey.
+    monochrome_icon: bool = False
 
     @classmethod
     def load(cls) -> "Config":

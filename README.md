@@ -68,6 +68,11 @@ yourself, see [Building](#building).
   resized, maximized or tiled freely: the game follows its size.
 - **One window, no scrolling**: the three games side by side, each with its status, Mods,
   Details (install, checks and fixes, log) and Play; settings in a bar along the bottom.
+- **Options** (the gear next to "Add a game folder"): a light, dark or system style, and the icon
+  the launcher shows in the app menu, taskbar and dock: its own or any of the three games', in
+  colour or monochrome. It's set by putting an icon of the launcher's name in `~/.local/share/icons`,
+  which desktops use before the installed one (and, for an AppImage that a tool like Gear Lever
+  added to the menu, in that tool's entry); choosing the launcher's own icon in colour undoes it.
 - **Shows why a game crashed**: after a crash it pulls the error out of the OpenXRay log.
 - **Mods**: browse ModDB for each game's mods and addons, download in your browser and have the
   launcher install the file when it lands; or install zip/7z/rar archives and unpacked folders
