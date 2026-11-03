@@ -61,6 +61,8 @@ class Pending:
     before: dict[str, tuple[int, float]] = field(default_factory=dict)
     # Sizes seen on the last poll, to tell when a file of unknown size has stopped growing.
     sizes: dict[str, int] = field(default_factory=dict)
+    # A standalone mod: the folder to unpack it in, rather than installing it as a game's mod.
+    destination: Path | None = None
 
     def __post_init__(self):
         if not self.before:
@@ -110,6 +112,17 @@ class Pending:
             for chunk in iter(lambda: f.read(1 << 20), b""):
                 digest.update(chunk)
         return digest.hexdigest() == self.md5
+
+
+def already_downloaded(filename: str | None, size: int | None, folder: Path | None = None) -> Path | None:
+    """The file in the Downloads folder, if it's all there, so it doesn't have to be downloaded again."""
+    if not filename or size is None:
+        return None
+    path = (folder or downloads_dir()) / filename
+    try:
+        return path if path.stat().st_size == size else None
+    except OSError:
+        return None
 
 
 class Watcher:

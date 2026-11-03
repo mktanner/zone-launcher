@@ -18,7 +18,7 @@ from . import appearance, detect, display, engine, fixes, mods, setup, standalon
 from .files_ui import FilesDialog  # noqa: E402
 from .moddb_ui import Downloads  # noqa: E402
 from .mods_ui import ModsDialog  # noqa: E402
-from .standalone_ui import ManageDialog  # noqa: E402
+from .standalone_ui import GetModsDialog, ManageDialog  # noqa: E402
 from .config import Config  # noqa: E402
 from .games import GAMES  # noqa: E402
 
@@ -74,7 +74,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         # ModDB downloads the user started; installed when they land in Downloads.
         self.downloads = Downloads()
         self.downloads.listen(self.on_download)
+        self.downloads.on_standalone = self.add_standalone
         self.mods_dialog: ModsDialog | None = None
+        self.get_mods_dialog: GetModsDialog | None = None
 
         self.toasts = Adw.ToastOverlay()
         view = Adw.ToolbarView()
@@ -239,13 +241,25 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def build_standalone_group(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup(title="Standalone mods")
-        if not self.config.standalone_mods:
-            group.set_description("Complete games in one folder, with their own Windows engine. They run with Wine.")
+        waiting = self.downloads.waiting(standalone.GAME)
+        if busy := self.downloads.busy(standalone.GAME):
+            group.set_description(f"Unpacking {busy[0].title}…")
+        elif waiting:
+            group.set_description(f"Waiting for {waiting[0].title} to download in your browser…")
+        elif not self.config.standalone_mods:
+            group.set_description("Complete games in one folder, with their own Windows engine. They run with Proton "
+                                  "or Wine.")
+        get = Gtk.Button(label="Get Mods…", css_classes=["flat"], valign=Gtk.Align.CENTER,
+                         tooltip_text="Popular standalone mods to download")
+        get.connect("clicked", lambda *_: self.show_get_mods())
         add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add a standalone mod's folder",
                          css_classes=["flat"], valign=Gtk.Align.CENTER)
         add.connect("clicked", lambda *_: Gtk.FileDialog(title="Choose the standalone mod's folder").select_folder(
             self, None, self.on_standalone_chosen))
-        group.set_header_suffix(add)
+        buttons = Gtk.Box(spacing=6)
+        buttons.append(get)
+        buttons.append(add)
+        group.set_header_suffix(buttons)
         for path in self.config.standalone_mods:
             group.add(self.build_standalone_row(self.load_standalone(path)))
         return group
@@ -284,9 +298,15 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.mods_dialog.connect("closed", lambda *_: setattr(self, "mods_dialog", None))
         self.mods_dialog.present(self)
 
+    def show_get_mods(self):
+        self.get_mods_dialog = GetModsDialog(self)
+        self.get_mods_dialog.connect("closed", lambda *_: setattr(self, "get_mods_dialog", None))
+        self.get_mods_dialog.present(self)
+
     def on_download(self, message: str | None):
         self.refresh()
-        if message and self.mods_dialog is None:  # an open mods window shows it itself
+        # An open mods window shows it itself.
+        if message and self.mods_dialog is None and self.get_mods_dialog is None:
             self.toast(message)
 
     def show_details(self, key: str):
@@ -609,6 +629,13 @@ class LauncherWindow(Adw.ApplicationWindow):
                        "A standalone mod's folder has a Windows program that starts it, such as bin/XR_3DA.exe, "
                        "and this one has none. Choose the folder the mod's files are in.")
             return
+        self.add_standalone(Path(path))
+        self.toast(f"Added {mod.name}")
+        # Show what was found: the launcher it picked, and whether anything's missing.
+        ManageDialog(self, self.load_standalone(path)).present(self)
+
+    def add_standalone(self, folder: Path):
+        path = str(folder)
         if path not in self.config.standalone_mods:
             self.config.standalone_mods.append(path)
             if not self.is_maximized() and not self.is_fullscreen():
@@ -617,9 +644,6 @@ class LauncherWindow(Adw.ApplicationWindow):
             self.config.extra_folders.remove(path)
         self.config.save()
         self.refresh()
-        self.toast(f"Added {mod.name}")
-        # Show what was found: the launcher it picked, and whether anything's missing.
-        ManageDialog(self, self.load_standalone(path)).present(self)
 
     def choose_standalone_launcher(self, mod: standalone.Standalone, launcher: str | None):
         """None: go back to the launcher the mod's folder suggests."""

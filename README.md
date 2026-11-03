@@ -74,6 +74,11 @@ yourself, see [Building](#building).
   and keeps its own saves and settings; each mod gets its own Wine prefix under
   `~/.local/share/zone-launcher/standalone`. You need Wine with 32-bit support, or Proton. The
   launcher's display and language settings don't apply to these mods, which have their own.
+  **Get Mods** suggests popular ones. STALKER Complete, Anomaly, Radiophobia 3 and Call of Chernobyl
+  download in your browser from ModDB, and are then unpacked to `~/Games` (or a folder you choose)
+  and added, ready to play; an archive already in your Downloads folder isn't downloaded again.
+  G.A.M.M.A., Lost Alpha, Dead Air and True Stalker aren't one download from ModDB, so they link to
+  their guide or page; afterwards, add their folder with **+**.
   **Manage** on a mod chooses which program starts it (popular engines are picked automatically,
   and any `.exe` in the folder can be chosen by hand), checks that it has what it needs (by reading
   which libraries the program loads and asking Wine which it provides, so mods don't need listing

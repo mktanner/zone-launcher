@@ -44,6 +44,10 @@ _wine_libraries: dict[str, set[str]] = {}
 DIRECTX_LIBRARY = re.compile(r"(d3dcompiler_\d+|d3dx\d*_\d+)\.dll", re.I)
 # Where they're found, as the installers Steam downloads for its games.
 DIRECTX_REDIST = "_CommonRedist/DirectX"
+# Stands for standalone mods among the games whose downloads are waited for.
+GAME = "standalone"
+# How much room to expect a mod to need, for the size of its archive: Anomaly unpacks to about twice its.
+UNPACK_FACTOR = 2.5
 # How long a new prefix can take to set up, in seconds.
 PREFIX_TIMEOUT = 300
 # Wine builds of other launchers, under the home folder. Proton is found in Steam's folders too.
@@ -241,6 +245,45 @@ def load(path: str | Path, launcher: str | None = None, settings: dict[str, str]
         launcher = next(iter(find_launchers(path)), None)
     known = {k: v for k, v in (settings or {}).items() if k in Settings.__dataclass_fields__}
     return Standalone(path, " ".join(path.name.replace("_", " ").split()), launcher, Settings(**known))
+
+
+def default_folder() -> Path:
+    """Where downloaded mods go unless the user says otherwise."""
+    return Path.home() / "Games"
+
+
+def free_space(folder: Path) -> int:
+    """The room on the drive of a folder, which may not exist yet."""
+    while not folder.exists() and folder != folder.parent:
+        folder = folder.parent
+    try:
+        return shutil.disk_usage(folder).free
+    except OSError:
+        return 0
+
+
+def unpack(archive: Path, folder: Path) -> Path:
+    """Unpacks a mod's archive to its own folder inside folder, and returns that. Nothing is left
+    behind if it isn't a mod that can be played."""
+    staging = folder / f".unpacking-{archive.stem}"
+    shutil.rmtree(staging, ignore_errors=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        mods.extract(archive, staging)
+        root = staging
+        # Archives often wrap everything in one folder named after the mod.
+        while not (root / "fsgame.ltx").is_file() and len(entries := list(root.iterdir())) == 1 and entries[0].is_dir():
+            root = entries[0]
+        root = locate(root)
+        if not find_launchers(root):
+            raise mods.ModError(f"{archive.name} has no Windows program that starts a game.")
+        target = folder / (archive.stem if root == staging else root.name)
+        if target.exists():
+            raise mods.ModError(f"{target} already exists. Add that folder with +, or move it out of the way.")
+        root.rename(target)
+        return target
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 # ----- what runs it ------------------------------------------------------------------------------

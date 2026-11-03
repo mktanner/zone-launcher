@@ -1,4 +1,5 @@
-"""The Manage dialog of a standalone mod: which program starts it, what runs it, what it needs, and its files."""
+"""Standalone mods: the Manage dialog (which program starts one, what runs it, what it needs, and its
+files), and the dialog that suggests popular ones to download."""
 
 import shlex
 import threading
@@ -10,8 +11,9 @@ gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
-from . import files, mods, standalone  # noqa: E402
+from . import downloads, files, moddb, mods, standalone, suggestions  # noqa: E402
 from .files_ui import FilesDialog  # noqa: E402
+from .moddb_ui import Thumbnail, in_background, open_uri, pending_row  # noqa: E402
 
 
 class ManageDialog(Adw.PreferencesDialog):
@@ -422,3 +424,168 @@ class ManageDialog(Adw.PreferencesDialog):
 
         dialog.connect("response", response)
         dialog.present(self.window)
+
+
+class GetModsDialog(Adw.PreferencesDialog):
+    """Popular standalone mods. Like ModDB's mods, they download in the user's browser; when one
+    lands in the Downloads folder it's unpacked and added, ready to play."""
+
+    def __init__(self, window):
+        super().__init__(title="Get Standalone Mods", search_enabled=False)
+        self.window = window
+        self.downloads = window.downloads
+        self.page = Adw.PreferencesPage()
+        self.add(self.page)
+        self.progress_group: Adw.PreferencesGroup | None = None
+
+        place = Adw.PreferencesGroup()
+        self.folder_row = Adw.ActionRow(title="Install to", subtitle=str(self.folder()), use_markup=False)
+        self.folder_row.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
+        change = Gtk.Button(label="Change…", valign=Gtk.Align.CENTER)
+        change.connect("clicked", self.on_change_folder)
+        self.folder_row.add_suffix(change)
+        place.add(self.folder_row)
+        self.page.add(place)
+
+        group = Adw.PreferencesGroup(title="Popular mods",
+                                     description="Each is a complete game in its own folder. A download opens in "
+                                                 "your browser. When it's finished, the launcher unpacks the mod and "
+                                                 "adds it, ready to play.")
+        # A suggestion -> its release on ModDB, and the box with its buttons.
+        self.releases: dict[suggestions.Suggestion, tuple[moddb.Item, moddb.Details] | None] = {}
+        self.actions: dict[suggestions.Suggestion, Gtk.Box] = {}
+        self.rows: dict[suggestions.Suggestion, Adw.ActionRow] = {}
+        for suggestion in suggestions.SUGGESTIONS:
+            group.add(self.build_row(suggestion))
+        self.page.add(group)
+        self.connect("closed", self.downloads.listen(self.on_downloads_changed))
+        self.fill_progress()
+
+    def folder(self) -> Path:
+        return Path(self.window.config.standalone_folder) if self.window.config.standalone_folder \
+            else standalone.default_folder()
+
+    def on_change_folder(self, _btn):
+        Gtk.FileDialog(title="Choose where to install standalone mods").select_folder(
+            self.window, None, self.on_folder_chosen)
+
+    def on_folder_chosen(self, dialog, result):
+        path = self.window.chosen_folder(dialog, result)
+        if path is not None:
+            self.window.config.standalone_folder = path
+            self.window.config.save()
+            self.folder_row.set_subtitle(path)
+
+    # ----- the suggestions ---------------------------------------------------------------------------
+
+    def build_row(self, suggestion: suggestions.Suggestion) -> Adw.ActionRow:
+        row = Adw.ActionRow(title=suggestion.name, subtitle=suggestion.summary, use_markup=False, subtitle_lines=3)
+        box = Gtk.Box(spacing=6, valign=Gtk.Align.CENTER)
+        row.add_suffix(box)
+        self.rows[suggestion], self.actions[suggestion] = row, box
+        if suggestion.full_version:
+            box.append(Gtk.Spinner(spinning=True))
+
+            def done(release, _error):
+                self.releases[suggestion] = release
+                if release:
+                    row.add_prefix(Thumbnail(release[0].image))
+                self.fill_actions(suggestion)
+
+            in_background(lambda: suggestions.find_release(suggestion), done)
+        else:
+            self.fill_actions(suggestion)
+        return row
+
+    def fill_actions(self, suggestion: suggestions.Suggestion):
+        box = self.actions[suggestion]
+        while child := box.get_first_child():
+            box.remove(child)
+        release = self.releases.get(suggestion)
+
+        def page_button(**options) -> Gtk.Button:
+            button = Gtk.Button(valign=Gtk.Align.CENTER, tooltip_text="Open its page", **options)
+            button.connect("clicked", lambda _b: open_uri(self, suggestion.page))
+            return button
+
+        if not release:
+            # Not one download, or ModDB couldn't be reached.
+            box.append(page_button(label=suggestion.guide or "Open Page"))
+        else:
+            box.append(page_button(icon_name="adw-external-link-symbolic", css_classes=["flat"]))
+        if suggestions.added(suggestion, self.window.config.standalone_mods):
+            box.append(Gtk.Label(label="Added", css_classes=["dim-label", "caption"]))
+        elif not release:
+            pass
+        elif any(p.title == suggestion.name for p in self.in_progress()):
+            box.append(Gtk.Label(label="In progress", css_classes=["dim-label", "caption"]))
+        else:
+            item, details = release
+            self.rows[suggestion].set_subtitle(f"{item.title} · {files.human_size(details.size)} · {suggestion.summary}"
+                                               if details.size else f"{item.title} · {suggestion.summary}")
+            have = downloads.already_downloaded(details.filename, details.size)
+            button = Gtk.Button(label="Install" if have else "Download", valign=Gtk.Align.CENTER,
+                                css_classes=["suggested-action"],
+                                tooltip_text=f"{details.filename} is in your Downloads folder" if have else
+                                "Download it in your browser, then it's unpacked and added")
+            button.connect("clicked", lambda _b: self.on_get(suggestion))
+            box.append(button)
+
+    def in_progress(self) -> list[downloads.Pending]:
+        return self.downloads.waiting(standalone.GAME) + self.downloads.busy(standalone.GAME)
+
+    def on_get(self, suggestion: suggestions.Suggestion):
+        _item, details = self.releases[suggestion]
+        needed = int((details.size or 0) * standalone.UNPACK_FACTOR)
+        free = standalone.free_space(self.folder())
+        if free >= needed:
+            self.start(suggestion)
+            return
+        dialog = Adw.AlertDialog(heading="That may not fit",
+                                 body=f"{suggestion.name} needs about {files.human_size(needed)} to unpack, and "
+                                      f"{self.folder()} has {files.human_size(free)} free. You can choose another "
+                                      "place with Change.")
+        dialog.add_response("cancel", "Cancel")
+        dialog.add_response("anyway", "Continue Anyway")
+        dialog.set_response_appearance("anyway", Adw.ResponseAppearance.DESTRUCTIVE)
+        dialog.set_default_response("cancel")
+        dialog.set_close_response("cancel")
+        dialog.connect("response", lambda _d, answer: answer == "anyway" and self.start(suggestion))
+        dialog.present(self.window)
+
+    def start(self, suggestion: suggestions.Suggestion):
+        _item, details = self.releases[suggestion]
+        # Created before the browser starts, so the file isn't counted as already there.
+        pending = downloads.Pending(game=standalone.GAME, title=suggestion.name, filename=details.filename,
+                                    size=details.size, md5=details.md5, destination=self.folder(),
+                                    origin={"site": "ModDB", "mod": suggestion.name, "page": suggestion.page,
+                                            "file": details.url})
+        if have := downloads.already_downloaded(details.filename, details.size):
+            self.downloads.pick(pending, have)
+            return
+        self.downloads.start(pending, details.start or details.url, self)
+        self.add_toast(Adw.Toast(title="Download it in your browser; it's installed when it's done", timeout=5))
+
+    # ----- what's on its way -------------------------------------------------------------------------
+
+    def fill_progress(self):
+        if self.progress_group:
+            self.page.remove(self.progress_group)
+            self.progress_group = None
+        waiting, busy = self.downloads.waiting(standalone.GAME), self.downloads.busy(standalone.GAME)
+        if not waiting and not busy:
+            return
+        self.progress_group = Adw.PreferencesGroup(title="Downloads")
+        for pending in busy:
+            self.progress_group.add(pending_row(self, self.downloads, pending, True))
+        for pending in waiting:
+            self.progress_group.add(pending_row(self, self.downloads, pending, False))
+        self.page.add(self.progress_group)
+
+    def on_downloads_changed(self, message: str | None):
+        self.fill_progress()
+        for suggestion in self.actions:
+            if not suggestion.full_version or suggestion in self.releases:
+                self.fill_actions(suggestion)
+        if message:
+            self.add_toast(Adw.Toast(title=GLib.markup_escape_text(message), timeout=5))
