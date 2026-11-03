@@ -18,17 +18,23 @@ ICONS = {"missing": "dialog-warning-symbolic", "mod": "application-x-addon-symbo
 
 
 class FilesDialog(Adw.Dialog):
-    def __init__(self, install: Install, run: Install, engine_share: Path | None = None):
-        super().__init__(title=f"{GAMES[install.game].title} files", content_width=760, content_height=620)
-        self.classifier = files.Classifier(install.game, install.path, run.path, engine_share)
-        # (label, folder) for each place the dropdown offers.
-        self.places = [("Game folder", run.path)]
+    @classmethod
+    def for_game(cls, install: Install, run: Install, engine_share: Path | None = None) -> "FilesDialog":
+        places = [("Game folder", run.path)]
         if run.path != install.path:
-            self.places.append(("Original install (read-only)", install.path))
-        self.places += [("Saved games", run.path / "_appdata_" / "savedgames"),
-                        ("Settings and logs", run.path / "_appdata_")]
-        self.root = run.path
-        self.folder = run.path
+            places.append(("Original install (read-only)", install.path))
+        places += [("Saved games", run.path / "_appdata_" / "savedgames"),
+                   ("Settings and logs", run.path / "_appdata_")]
+        return cls(f"{GAMES[install.game].title} files", places,
+                   files.Classifier(install.game, install.path, run.path, engine_share))
+
+    def __init__(self, title: str, places: list[tuple[str, Path]], classifier):
+        super().__init__(title=title, content_width=760, content_height=620)
+        self.classifier = classifier
+        # (label, folder) for each place the dropdown offers.
+        self.places = places
+        self.root = places[0][1]
+        self.folder = self.root
 
         view = Adw.ToolbarView()
         header = Adw.HeaderBar()

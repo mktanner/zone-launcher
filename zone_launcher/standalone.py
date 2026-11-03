@@ -1,0 +1,648 @@
+"""Standalone mods: complete games in one folder, with their own data and modified Windows engine.
+
+OpenXRay can't run them, since their changes are compiled into that engine, so they run with the
+system's Wine, a Wine build or a version of Proton, all on the host: from inside the Flatpak, through
+flatpak-spawn. The folder is used where it is and saves stay in it (its fsgame.ltx says so); only the
+Wine prefix, Wine's log and the libraries installed for the mod live elsewhere.
+"""
+
+import hashlib
+import os
+import re
+import shlex
+import shutil
+import subprocess
+import tempfile
+from dataclasses import dataclass
+from functools import cached_property
+from pathlib import Path
+
+from . import detect, mods, pe
+from .engine import engine_environment
+
+ICONS = ("Linux/icon.png", "icon.png")
+# Run the DXVK and runtime DLLs a mod bundles, not Wine's own. BugTrap needs Wine's dbghelp.
+DLL_OVERRIDES = "dbghelp=b;d3dcompiler_43=n,b;msvcr71=n,b;msvcr80=n,b;msvcp71=n,b;msvcp80=n,b;d3d9=n,b"
+# Without Wine Mono and Gecko, which a new prefix may otherwise offer to download. Only .NET programs need them.
+NO_DOTNET = "mscoree=;mshtml="
+# Where to look for programs, and what's never the one that starts the game.
+SEARCH_DEPTH = 2
+SKIP_FOLDERS = {"tools", "setup", "redist", "_commonredist", "directx", "support", "appdata", "_appdata_",
+                "gamedata", "db", "resources", "levels", "patches", "mods", "localization", "linux"}
+NOT_LAUNCHERS = re.compile(r"(unins|setup|install|vc_?redist|dxsetup|dxwebsetup|crash|bugreport|notification_helper)",
+                           re.I)
+# Wine's own copies of Windows' DLLs, wherever distributions and Wine's own packages put them.
+WINE_LIBRARIES = "ls /usr/lib*/wine/*-windows /usr/lib/*/wine/*-windows /opt/wine*/lib*/wine/*-windows"
+# The same, under a Wine build's folder ($0) or a version of Proton's.
+RUNNER_LIBRARIES = 'ls "$0"/lib*/wine/*-windows "$0"/files/lib*/wine/*-windows "$0"/dist/lib*/wine/*-windows'
+# Not files: names Windows (and Wine, in its apisetschema.dll) maps to the DLL that implements them.
+API_SETS = ("api-ms-", "ext-ms-")
+# What wine_libraries found for each runner, once it has found something.
+_wine_libraries: dict[str, set[str]] = {}
+# Microsoft's libraries that compile a game's shaders. Wine and Proton have their own, but those
+# can't compile everything: Anomaly's shaders stop them with "E5017: not yet implemented feature".
+DIRECTX_LIBRARY = re.compile(r"(d3dcompiler_\d+|d3dx\d*_\d+)\.dll", re.I)
+# Where they're found, as the installers Steam downloads for its games.
+DIRECTX_REDIST = "_CommonRedist/DirectX"
+# How long a new prefix can take to set up, in seconds.
+PREFIX_TIMEOUT = 300
+# Wine builds of other launchers, under the home folder. Proton is found in Steam's folders too.
+RUNNER_FOLDERS = (".local/share/lutris/runners/wine", ".var/app/net.lutris.Lutris/data/lutris/runners/wine",
+                  ".config/heroic/tools/proton", ".config/heroic/tools/wine",
+                  ".var/app/com.heroicgameslauncher.hgl/config/heroic/tools/proton",
+                  ".var/app/com.heroicgameslauncher.hgl/config/heroic/tools/wine",
+                  ".local/share/bottles/runners", ".var/app/com.usebottles.bottles/data/bottles/runners")
+# The versions of Proton that run these games best, in order; newest first within each. Any Proton
+# beats any Wine: it brings DXVK and the fixes games need, and only needs Steam to have downloaded it.
+BEST_PROTON = (r"cachyos", r"experimental", r"^ge-proton", r"^proton \d")
+SYSTEM_WINE = "System Wine"
+# The setting for it. Empty means the best runner found.
+SYSTEM_RUNNER = "system"
+# The setting for going without Microsoft's DirectX libraries.
+LIBRARIES_OFF = "off"
+# The version of the system's Wine, once it has been asked.
+_system_wine_version: list[str] = []
+
+
+@dataclass(frozen=True)
+class Settings:
+    # The folder of the Wine build or version of Proton that runs the mod, or SYSTEM_RUNNER.
+    # Empty: the best one found, which stays the best as new versions are installed.
+    runner: str = ""
+    # Added to the DLL overrides the launcher sets, and win over them: d3d11=n,b;dxgi=n,b
+    overrides: str = ""
+    # Environment variables for the game: DXVK_HUD=fps MANGOHUD=1
+    environment: str = ""
+    # Passed to the program that starts the game.
+    arguments: str = ""
+    # LIBRARIES_OFF, or empty to install Microsoft's DirectX libraries when the mod would need them.
+    libraries: str = ""
+
+
+@dataclass(frozen=True)
+class Runner:
+    """What runs a mod's Windows program."""
+    name: str
+    # Its folder; None for the system's Wine.
+    path: Path | None = None
+
+    @property
+    def is_proton(self) -> bool:
+        return self.path is not None and (self.path / "proton").is_file()
+
+    @property
+    def family(self) -> str:
+        """The name without its version, so that a new version of Proton carries on from the last one's prefix."""
+        return re.sub(r"[^a-z]+", "-", re.match(r"\D*", self.name.lower())[0]).strip("-") or "proton"
+
+    @property
+    def wine_folder(self) -> Path | None:
+        """The folder with bin/wine: inside a version of Proton, either name depending on its age."""
+        if not self.is_proton:
+            return self.path
+        return self.path / "files" if (self.path / "files").is_dir() else self.path / "dist"
+
+    def command(self, *args: str) -> list[str]:
+        """A command that runs a Windows program with this runner."""
+        if self.is_proton:
+            return ["python3", str(self.path / "proton"), "waitforexitandrun", *args]
+        return [str(self.path / "bin" / "wine") if self.path else "wine", *args]
+
+
+@dataclass(frozen=True)
+class Standalone:
+    path: Path
+    name: str
+    # The program that starts the game, relative to path: the one chosen, or the best one found.
+    exe: str | None
+    settings: Settings = Settings()
+
+    @property
+    def key(self) -> str:
+        """Identifies it among running games; game keys never contain a colon."""
+        return f"standalone:{self.path}"
+
+    @property
+    def data_dir(self) -> Path:
+        slug = re.sub(r"[^a-z0-9]+", "-", self.name.lower()).strip("-")
+        digest = hashlib.sha256(str(self.path).encode()).hexdigest()[:8]
+        # The host's folder, also inside the Flatpak (whose XDG_DATA_HOME is its own): Wine runs on the host.
+        return Path.home() / ".local" / "share" / "zone-launcher" / "standalone" / f"{slug}-{digest}"
+
+    @cached_property
+    def runner(self) -> Runner:
+        return runner_at(self.settings.runner)
+
+    @property
+    def compat_dir(self) -> Path:
+        """Proton's own folder for the mod, with its prefix inside. Proton calls a prefix from
+        another family of Proton invalid, and Wine's differ too, so each has its own."""
+        return self.data_dir / self.runner.family
+
+    @property
+    def prefix(self) -> Path:
+        return self.compat_dir / "pfx" if self.runner.is_proton else self.data_dir / "wineprefix"
+
+    @property
+    def libraries_dir(self) -> Path:
+        """Windows libraries installed for the mod, in folders 32 and 64: they go into whichever prefix it uses."""
+        return self.data_dir / "libraries"
+
+    @property
+    def wine_log(self) -> Path:
+        return self.data_dir / "wine.log"
+
+    @property
+    def icon(self) -> Path | None:
+        return next((self.path / name for name in ICONS if (self.path / name).is_file()), None)
+
+    @property
+    def app_data(self) -> Path:
+        """Saves, settings and logs: wherever the mod's fsgame.ltx puts them."""
+        return self.path / (app_data_folder(self.path) or "_appdata_")
+
+    def latest_log(self) -> Path | None:
+        logs = sorted((self.app_data / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime)
+        return logs[-1] if logs else None
+
+
+@dataclass(frozen=True)
+class Check:
+    title: str
+    ok: bool
+    detail: str
+
+
+def app_data_folder(folder: Path) -> str | None:
+    """The folder fsgame.ltx names for $app_data_root$, if it's inside the game's folder."""
+    try:
+        text = (folder / "fsgame.ltx").read_text(errors="replace")
+    except OSError:
+        return None
+    match = re.search(r"^\s*\$app_data_root\$\s*=(.*)$", text, re.M)
+    fields = [f.strip() for f in match.group(1).split("|")] if match else []
+    if len(fields) < 4 or fields[2] != "$fs_root$":
+        return None
+    name = fields[3].rstrip("\\/")
+    return name if name and ".." not in name else None
+
+
+def has_avx() -> bool:
+    try:
+        return " avx " in Path("/proc/cpuinfo").read_text()
+    except OSError:
+        return True
+
+
+def _rank(rel: str, avx: bool) -> tuple:
+    """Popular engines first, then anything in bin, then launcher programs, then the rest."""
+    path = Path(rel)
+    stem = path.stem.lower()
+    in_bin = path.parts[0].lower().startswith("bin")
+    if match := re.fullmatch(r"anomalydx(\d+)(avx)?", stem):
+        # The official launcher's default: the newest renderer, with AVX if the processor has it.
+        return (0, bool(match[2]) != avx, -int(match[1]), rel)
+    if stem in ("xr_3da", "xrengine"):
+        return (0, not in_bin, 0, rel)
+    if "launcher" in stem:
+        return (2, False, 0, rel)
+    return (1 if in_bin else 3, False, 0, rel)
+
+
+def find_launchers(folder: Path) -> list[str]:
+    """The programs that could start the game, relative to the folder, best first."""
+    found = []
+    for root, folders, names in os.walk(folder):
+        here = Path(root).relative_to(folder)
+        if len(here.parts) >= SEARCH_DEPTH:
+            folders.clear()
+        folders[:] = [f for f in folders if f.lower() not in SKIP_FOLDERS]
+        found += [(here / name).as_posix() for name in names
+                  if name.lower().endswith(".exe") and not NOT_LAUNCHERS.search(name)]
+    avx = has_avx()
+    return sorted(found, key=lambda rel: _rank(rel, avx))
+
+
+def locate(folder: Path) -> Path:
+    """The mod's own folder: the one picked, or the only folder inside it if it's just a wrapper."""
+    if (folder / "fsgame.ltx").is_file():
+        return folder
+    try:
+        children = [c for c in folder.iterdir() if not c.name.startswith(".")]
+    except OSError:
+        return folder
+    inner = [c for c in children if (c / "fsgame.ltx").is_file()]
+    return inner[0] if len(inner) == 1 else folder
+
+
+def load(path: str | Path, launcher: str | None = None, settings: dict[str, str] | None = None) -> Standalone:
+    path = Path(path)
+    if not launcher and path.is_dir():
+        launcher = next(iter(find_launchers(path)), None)
+    known = {k: v for k, v in (settings or {}).items() if k in Settings.__dataclass_fields__}
+    return Standalone(path, " ".join(path.name.replace("_", " ").split()), launcher, Settings(**known))
+
+
+# ----- what runs it ------------------------------------------------------------------------------
+
+
+def runner_at(setting: str) -> Runner:
+    if not setting:
+        return best_runner()
+    return Runner(SYSTEM_WINE) if setting == SYSTEM_RUNNER else Runner(Path(setting).name, Path(setting))
+
+
+def is_runner(folder: Path) -> bool:
+    return (folder / "proton").is_file() or (folder / "bin" / "wine").is_file()
+
+
+def _version_order(runner: Runner) -> list:
+    """Sorts names by their numbers, so 10-34 comes after 10-4."""
+    return [(0, int(part)) if part.isdigit() else (1, part) for part in re.split(r"(\d+)", runner.name.lower()) if part]
+
+
+def _preference(runner: Runner) -> int:
+    if not runner.is_proton:
+        return len(BEST_PROTON) + 1
+    name = runner.name.lower()
+    return next((i for i, pattern in enumerate(BEST_PROTON) if re.search(pattern, name)), len(BEST_PROTON))
+
+
+def find_runners() -> list[Runner]:
+    """Every version of Proton and Wine build found, best first."""
+    home = Path.home()
+    places = [root / "compatibilitytools.d" for root in detect.steam_roots(home)]
+    places += [home / place for place in RUNNER_FOLDERS]
+    folders = [folder for place in places if place.is_dir() for folder in place.iterdir()]
+    for root in detect.steam_roots(home):
+        for library in detect._steam_libraries(root):
+            folders += (library / "steamapps" / "common").glob("Proton*")
+    # The same folder is reached more than once (~/.steam/steam is a link to Steam's folder), and other
+    # launchers have copies of the same version. Only the name shows, so the first one found stays: Steam's.
+    named: dict[str, Path] = {}
+    for folder in folders:
+        if is_runner(folder):
+            named.setdefault(folder.name, folder)
+    newest = sorted((Runner(name, folder) for name, folder in named.items()), key=_version_order, reverse=True)
+    return sorted(newest, key=_preference)
+
+
+def best_runner() -> Runner:
+    """What a mod runs with unless the user says otherwise. An old Wine build is a last resort."""
+    runners = find_runners()
+    if runners and runners[0].is_proton:
+        return runners[0]
+    return Runner(SYSTEM_WINE) if not runners or wine_version() else runners[0]
+
+
+def wine_version() -> str | None:
+    """The version of the system's Wine, or None if it isn't installed."""
+    if not _system_wine_version:
+        try:
+            result = subprocess.run(host_command(["wine", "--version"]), stdin=subprocess.DEVNULL, capture_output=True,
+                                    text=True, timeout=10, env=engine_environment())
+        except (OSError, subprocess.TimeoutExpired):
+            return None
+        if result.returncode != 0:
+            return None
+        _system_wine_version.append(result.stdout.strip())
+    return _system_wine_version[0]
+
+
+def runner_problem(runner: Runner) -> str | None:
+    """Why a runner can't start anything, in words."""
+    if runner.path is None:
+        return None if wine_version() else ("Neither Proton nor the system's Wine was found. Install Proton "
+                                            "Experimental with Steam, or Wine with 32-bit support.")
+    if not is_runner(runner.path):
+        return f"{runner.name} isn't there any more. Choose another."
+    if runner.is_proton and not host_has("python3"):
+        return "Proton needs Python 3 on this computer."
+    return None
+
+
+def host_has(program: str) -> bool:
+    if not in_flatpak():
+        return shutil.which(program, path=engine_environment().get("PATH")) is not None
+    try:
+        return subprocess.run(host_command(["sh", "-c", f"command -v {program}"]), stdin=subprocess.DEVNULL,
+                              stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def wine_libraries(runner: Runner) -> set[str]:
+    """The DLLs (in lower case) a runner has its own copies of, so a mod doesn't have to bundle them."""
+    key = str(runner.path or "")
+    if key not in _wine_libraries:
+        command = ["sh", "-c", RUNNER_LIBRARIES, str(runner.path)] if runner.path else ["sh", "-c", WINE_LIBRARIES]
+        try:
+            output = subprocess.run(host_command(command), stdin=subprocess.DEVNULL, capture_output=True, text=True,
+                                    timeout=10, env=engine_environment()).stdout
+        except (OSError, subprocess.TimeoutExpired):
+            return set()
+        found = {line.strip().lower() for line in output.splitlines() if "." in line}
+        if not found:
+            return set()
+        _wine_libraries[key] = found
+    return _wine_libraries[key]
+
+
+# ----- what it loads -----------------------------------------------------------------------------
+
+
+def _loaded_libraries(folder: Path, exe: str) -> tuple[dict[str, str], set[str]]:
+    """Follows the DLLs a program loads at startup, and those they load: (their names by lower-case
+    name, those the mod bundles). Windows looks beside the program and in the working folder."""
+    start = folder / exe
+    bundled: dict[str, Path] = {}
+    for place in (folder, start.parent):
+        try:
+            bundled |= {p.name.lower(): p for p in place.iterdir() if p.is_file()}
+        except OSError:
+            pass
+    seen: dict[str, str] = {}
+    queue = [start]
+    while queue:
+        program = pe.read(queue.pop())
+        for name in program.imports if program else ():
+            key = name.lower()
+            if key not in seen:
+                seen[key] = name
+                if key in bundled:
+                    queue.append(bundled[key])
+    return seen, set(seen) & set(bundled)
+
+
+def missing_libraries(folder: Path, exe: str, provided: set[str]) -> tuple[int, list[str]]:
+    """(How many of the DLLs a program needs the mod bundles, those neither it nor Wine (provided) has)."""
+    seen, bundled = _loaded_libraries(folder, exe)
+    missing = [name for key, name in seen.items()
+               if key not in bundled and key not in provided and not key.startswith(API_SETS)]
+    return len(bundled), sorted(missing, key=str.lower)
+
+
+def installed_libraries(mod: Standalone) -> set[str]:
+    """The Windows libraries (in lower case) installed for the mod."""
+    return {p.name for p in mod.libraries_dir.glob("*/*.dll")}
+
+
+def wanted_libraries(mod: Standalone, exe: str | None = None) -> set[str]:
+    """Microsoft's DirectX libraries (in lower case) a program of the mod would use Wine's copies of."""
+    if not (exe := exe or mod.exe):
+        return set()
+    seen, bundled = _loaded_libraries(mod.path, exe)
+    return {key for key in set(seen) - bundled if DIRECTX_LIBRARY.fullmatch(key)}
+
+
+def libraries_to_install(mod: Standalone) -> set[str]:
+    """What any of the mod's programs wants, so changing its launcher doesn't need another install."""
+    programs = {*find_launchers(mod.path), *([mod.exe] if mod.exe else [])}
+    return {name for exe in programs for name in wanted_libraries(mod, exe)} - installed_libraries(mod)
+
+
+def redist_folders() -> list[Path]:
+    """The folders of Microsoft's DirectX installers in the user's Steam libraries."""
+    folders = []
+    home = Path.home()
+    for root in detect.steam_roots(home):
+        for library in detect._steam_libraries(root):
+            common = library / "steamapps" / "common"
+            folders += common.glob(f"Steamworks Shared/{DIRECTX_REDIST}/*")
+            folders += common.glob(f"*/{DIRECTX_REDIST}/*")
+    return list({folder.resolve(): folder for folder in folders if folder.is_dir()}.values())
+
+
+def _keep_library(mod: Standalone, dll: Path) -> str | None:
+    """Keeps a DLL for the mod, by its bitness and in lower case: Wine's own names are."""
+    program = pe.read(dll)
+    if not program:
+        return None
+    folder = mod.libraries_dir / str(program.bits)
+    folder.mkdir(parents=True, exist_ok=True)
+    shutil.copyfile(dll, folder / dll.name.lower())
+    return dll.name.lower()
+
+
+def add_library_file(mod: Standalone, file: Path) -> list[str]:
+    """Keeps a DLL, or every DLL in an installer's .cab file: the names of those kept."""
+    if file.suffix.lower() != ".cab":
+        return [name for name in [_keep_library(mod, file)] if name]
+    mod.data_dir.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(dir=mod.data_dir) as unpacked:
+        mods.extract(file, Path(unpacked))
+        kept = [_keep_library(mod, dll) for dll in Path(unpacked).rglob("*") if dll.suffix.lower() == ".dll"]
+    return [name for name in kept if name]
+
+
+def redist_cabs(names: set[str]) -> dict[str, list[Path]]:
+    """The installers' .cab files of those libraries the user's Steam folders have."""
+    cabs = [cab for folder in redist_folders() for cab in folder.glob("*.cab")]
+    found = {name: [cab for cab in cabs if re.search(rf"_{re.escape(Path(name).stem)}_x(64|86)\.cab$", cab.name, re.I)]
+             for name in names}
+    return {name: files for name, files in found.items() if files}
+
+
+def install_libraries(mod: Standalone) -> tuple[list[str], list[str]]:
+    """Installs what the mod wants from the installers in Steam's folders: (those installed, those not found)."""
+    wanted = libraries_to_install(mod)
+    installed = []
+    for name, cabs in sorted(redist_cabs(wanted).items()):
+        kept = [kept for cab in cabs for kept in add_library_file(mod, cab)]
+        if name in kept:
+            installed.append(name)
+    return installed, sorted(wanted - set(installed))
+
+
+def remove_libraries(mod: Standalone) -> None:
+    """Goes back to Wine's and Proton's own copies, in every prefix the mod has."""
+    prefixes = [mod.data_dir / "wineprefix", *mod.data_dir.glob("*/pfx")]
+    for dll in mod.libraries_dir.glob("*/*.dll"):
+        for prefix in prefixes:
+            for place in ("system32", "syswow64"):
+                (prefix / "drive_c" / "windows" / place / dll.name).unlink(missing_ok=True)
+        dll.unlink()
+
+
+def place_libraries(mod: Standalone) -> None:
+    """Copies the mod's libraries into its prefix. Proton's prefixes link to Proton's own files, so
+    the link is replaced rather than written through."""
+    windows = mod.prefix / "drive_c" / "windows"
+    system = windows / "system32"
+    # In a 64-bit prefix, 32-bit programs use syswow64; a 32-bit prefix has only system32, for them.
+    places = {"64": system, "32": windows / "syswow64"} if (windows / "syswow64").is_dir() else {"32": system}
+    for bits, place in places.items():
+        for dll in (mod.libraries_dir / bits).glob("*.dll"):
+            target = place / dll.name
+            target.unlink(missing_ok=True)
+            shutil.copyfile(dll, target)
+
+
+def _game_data(folder: Path) -> str | None:
+    """Where the game's data is, in words, or None if there's none in any usual place."""
+    try:
+        archives = [p for p in folder.iterdir() if p.is_file() and re.search(r"\.x?db[\w]*$", p.name, re.I)]
+    except OSError:
+        return None
+    if archives:
+        return f"{len(archives)} archive{'s' if len(archives) != 1 else ''} in the mod's folder"
+    for name in ("db", "resources", "gamedata"):
+        try:
+            if any((folder / name).iterdir()):
+                return f"The {name} folder"
+        except OSError:
+            continue
+    return None
+
+
+def check(mod: Standalone) -> list[Check]:
+    """Whether a mod has what it needs, from the folder and the program itself rather than a list per mod."""
+    checks = []
+    exe = mod.path / mod.exe if mod.exe else None
+    program = pe.read(exe) if exe and exe.is_file() else None
+    if not mod.exe:
+        checks.append(Check("Launcher", False, "No Windows program found in the folder."))
+    elif not exe.is_file():
+        checks.append(Check("Launcher", False, f"{mod.exe} isn't in the folder any more. Choose another."))
+    elif not program:
+        checks.append(Check("Launcher", False, f"{mod.exe} isn't a Windows program. Choose another."))
+    else:
+        kind = f"{program.bits}-bit" + (", .NET" if program.dotnet else "")
+        checks.append(Check("Launcher", True, f"{mod.exe} ({kind})"))
+    fsgame = (mod.path / "fsgame.ltx").is_file()
+    checks.append(Check("Game file list (fsgame.ltx)", fsgame, "In the mod's folder" if fsgame
+                        else "Not in this folder. X-Ray games need it: is this the folder the game is in?"))
+    data = _game_data(mod.path)
+    checks.append(Check("Game data", bool(data), data or "No archives or data folders found."))
+    runner = mod.runner
+    if problem := runner_problem(runner):
+        checks.append(Check(runner.name, False, problem))
+    elif program and (provided := wine_libraries(runner)):
+        count, missing = missing_libraries(mod.path, mod.exe, provided)
+        source = "Proton" if runner.is_proton else "Wine"
+        checks.append(Check("Libraries", not missing, f"Missing: {', '.join(missing)}" if missing
+                            else f"All there: {count} from the mod, the rest from {source}" if count
+                            else f"All there: {source} provides them"))
+    absent = wanted_libraries(mod) - installed_libraries(mod) if program else set()
+    if absent and mod.settings.libraries != LIBRARIES_OFF:
+        unavailable = absent - set(redist_cabs(absent))
+        checks.append(Check("DirectX libraries", False,
+                            f"{', '.join(sorted(unavailable))} from Microsoft aren't installed for this mod, and "
+                            "Steam's DirectX installer wasn't found. Wine's and Proton's own can't compile every "
+                            "game's shaders.") if unavailable else
+                      Check("DirectX libraries", True, f"Microsoft's {', '.join(sorted(absent))} will be installed "
+                            "from Steam's DirectX installer when you press Play."))
+    return checks
+
+
+def problems(mod: Standalone) -> list[Check]:
+    return [c for c in check(mod) if not c.ok]
+
+
+def in_flatpak() -> bool:
+    return Path("/.flatpak-info").exists()
+
+
+def host_command(argv: list[str], directory: Path | None = None, env: dict[str, str] | None = None) -> list[str]:
+    """A command for the host. Outside the Flatpak the caller passes directory and env to Popen too."""
+    if not in_flatpak():
+        return argv
+    options = [f"--directory={directory}"] if directory else []
+    options += [f"--env={name}={value}" for name, value in (env or {}).items()]
+    return ["flatpak-spawn", "--host", *options, *argv]
+
+
+def user_environment(text: str) -> dict[str, str]:
+    """Environment variables as written in the settings. Raises ValueError for anything else."""
+    variables = {}
+    for word in shlex.split(text):
+        name, equals, value = word.partition("=")
+        if not equals or not re.fullmatch(r"[A-Za-z_]\w*", name):
+            raise ValueError(f"{word} isn't NAME=value")
+        variables[name] = value
+    return variables
+
+
+def wine_environment(mod: Standalone) -> dict[str, str]:
+    program = pe.read(mod.path / mod.exe) if mod.exe else None
+    overrides = [DLL_OVERRIDES] if program and program.dotnet else [DLL_OVERRIDES, NO_DOTNET]
+    overrides += [f"{Path(name).stem}=n,b" for name in sorted(installed_libraries(mod))]
+    # The last one for a DLL is the one Wine uses.
+    if mod.settings.overrides.strip():
+        overrides.append(mod.settings.overrides.strip().strip(";"))
+    env = {"WINEPREFIX": str(mod.prefix), "WINEDLLOVERRIDES": ";".join(overrides)}
+    if mod.runner.is_proton:
+        roots = [root for root in detect.steam_roots(Path.home()) if root.is_dir()]
+        env |= {"STEAM_COMPAT_DATA_PATH": str(mod.compat_dir),
+                "STEAM_COMPAT_CLIENT_INSTALL_PATH": str(roots[0] if roots else mod.compat_dir)}
+    try:
+        return env | user_environment(mod.settings.environment)
+    except ValueError:
+        return env
+
+
+def _spawn(mod: Standalone, argv: list[str], output=subprocess.DEVNULL) -> subprocess.Popen:
+    # The engine finds fsgame.ltx in the working directory.
+    env = wine_environment(mod)
+    return subprocess.Popen(host_command(argv, mod.path, env), cwd=mod.path, stdin=subprocess.DEVNULL, stdout=output,
+                            stderr=subprocess.STDOUT, env={**engine_environment(), **env})
+
+
+def _make_prefix_folder(mod: Standalone) -> None:
+    (mod.compat_dir if mod.runner.is_proton else mod.prefix).mkdir(parents=True, exist_ok=True)
+
+
+def prefix_ready(mod: Standalone) -> bool:
+    return (mod.prefix / "system.reg").is_file() and (mod.prefix / "drive_c" / "windows" / "system32").is_dir()
+
+
+def prepare(mod: Standalone) -> None:
+    """Installs the libraries the mod needs and puts them in its prefix, first making the prefix if
+    it's new: the game can't wait for that, since it starts as soon as the prefix exists. Takes a
+    while, so not for the main thread."""
+    if mod.settings.libraries != LIBRARIES_OFF and libraries_to_install(mod):
+        try:
+            install_libraries(mod)
+        except (OSError, mods.ModError):
+            pass  # The game may run without them, and if it doesn't its log says why.
+    if not installed_libraries(mod):
+        return
+    if not prefix_ready(mod):
+        _make_prefix_folder(mod)
+        process = _spawn(mod, mod.runner.command("wineboot", "-i"))
+        try:
+            process.wait(timeout=PREFIX_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            process.kill()
+    place_libraries(mod)
+
+
+def launch(mod: Standalone) -> subprocess.Popen:
+    _make_prefix_folder(mod)
+    # Proton doesn't find a program by a relative path, and exits without saying so.
+    program = str(mod.path / mod.exe) if mod.runner.is_proton else mod.exe
+    try:
+        arguments = shlex.split(mod.settings.arguments)
+    except ValueError:
+        arguments = []
+    with open(mod.wine_log, "wb") as log:
+        return _spawn(mod, mod.runner.command(program, *arguments), log)
+
+
+def configure(mod: Standalone) -> subprocess.Popen:
+    """Opens Wine's own settings for the mod's prefix."""
+    _make_prefix_folder(mod)
+    return _spawn(mod, mod.runner.command("winecfg"))
+
+
+def stop(mod: Standalone) -> None:
+    """End everything running in the mod's prefix: stopping Wine's starter process doesn't end the game."""
+    runner = mod.runner
+    _spawn(mod, [str(runner.wine_folder / "bin" / "wineserver"), "-k"] if runner.is_proton
+           else runner.command("wineboot", "-k"))
+
+
+def shader_failure(log_text: str) -> str | None:
+    """The error of Wine's shader compiler that stopped a game, if there's one in its log."""
+    match = re.search(r"^.*:\d+:\d+: (E5\d{3}: .*)$", log_text, re.M)
+    return match[1] if match else None

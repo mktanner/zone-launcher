@@ -22,6 +22,12 @@ class Config:
     found_folders: list[str] = field(default_factory=list)
     # Found folders the user removed from the list, so searching doesn't bring them back.
     hidden_folders: list[str] = field(default_factory=list)
+    # Folders of standalone mods the user added.
+    standalone_mods: list[str] = field(default_factory=list)
+    # A standalone mod's folder -> the program the user chose to start it, relative to the folder.
+    standalone_launchers: dict[str, str] = field(default_factory=dict)
+    # A standalone mod's folder -> the fields of standalone.Settings the user changed.
+    standalone_settings: dict[str, dict[str, str]] = field(default_factory=dict)
     extra_args: str = ""
     language: str = "english"
     # "native", "keep" (use the in-game setting) or "WIDTHxHEIGHT".

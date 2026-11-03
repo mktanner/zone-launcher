@@ -23,6 +23,9 @@ finish-args:
   # Games installed with Flatpak Bottles or Lutris (found by the launcher's search).
   - --filesystem=~/.var/app/com.usebottles.bottles/data/bottles:ro
   - --filesystem=~/.var/app/net.lutris.Lutris/data/lutris:ro
+  # Standalone mods run with the system's Wine (flatpak-spawn --host). This lets the launcher start
+  # programs outside the sandbox.
+  - --talk-name=org.freedesktop.Flatpak
 
 modules:
   - name: openxray

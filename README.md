@@ -68,6 +68,28 @@ yourself, see [Building](#building).
   resized, maximized or tiled freely: the game follows its size.
 - **One window, no scrolling**: the three games side by side, each with its status, Mods,
   Details (install, checks and fixes, log) and Play; settings in a bar along the bottom.
+- **Standalone mods**: mods that are complete games in one folder, with their own Windows engine
+  (such as STALKER Complete 1.5 or Anomaly), run with Wine or Proton rather than OpenXRay. Add
+  the mod's folder with **+** under "Standalone mods" and press Play. The folder stays where it is
+  and keeps its own saves and settings; each mod gets its own Wine prefix under
+  `~/.local/share/zone-launcher/standalone`. You need Wine with 32-bit support, or Proton. The
+  launcher's display and language settings don't apply to these mods, which have their own.
+  **Manage** on a mod chooses which program starts it (popular engines are picked automatically,
+  and any `.exe` in the folder can be chosen by hand), checks that it has what it needs (by reading
+  which libraries the program loads and asking Wine which it provides, so mods don't need listing
+  one by one), and browses, opens and trashes its files. Under **Wine and Proton** it chooses what
+  runs the mod. **Automatic** is recommended and needs no setting up: it uses the best you have, in
+  the order CachyOS Proton, Proton Experimental, GE-Proton, Steam's other versions, then the
+  system's Wine, and moves to new versions as they're installed. You can also choose any version of
+  Proton or Wine build found in Steam, Heroic, Lutris and Bottles, or a folder of your own. It also
+  sets launch arguments, DLL overrides and environment variables, opens Wine Configuration and the
+  prefix, and resets the prefix.
+  **Microsoft's DirectX libraries**: Wine's and Proton's shader compilers can't build every game's
+  shaders (Anomaly stops with `E5017`), so a mod that would use them gets Microsoft's copies when
+  you press Play, from the DirectX installer in your Steam folder. Without Steam, Manage warns about
+  it: choose the DLLs or the `.cab` files of Microsoft's DirectX installer yourself. The Flatpak needs
+  permission to start programs outside its sandbox to reach Wine and Proton, so it isn't strictly
+  sandboxed.
 - **Options** (the gear next to "Add a game folder"): a light, dark or system style, and the icon
   the launcher shows in the app menu, taskbar and dock: its own or any of the three games', in
   colour or monochrome. It's set by putting an icon of the launcher's name in `~/.local/share/icons`,
@@ -95,7 +117,8 @@ Each game's card has a **Mods** button that opens its mod list.
 - **Not every ModDB mod works here.** Mods for the original game usually do; standalone games such
   as Anomaly (and GAMMA on top of it), and mods that need their own engine (OGSR, OGSE, X-Ray
   Monolith, or anything that replaces the game's `bin/` files) don't run on OpenXRay. The ModDB
-  pages say so, and entries whose name or summary mentions one of these get a warning.
+  pages say so, and entries whose name or summary mentions one of these get a warning. A standalone
+  mod can still be added under "Standalone mods" to run with Wine.
 - **Mods that ship their own engine** (`xrGame.dll`, `xrEngine.exe`, `xrCore.dll` or `xr_3da.exe`,
   usually in a `bin/` folder) are made for that modified Windows engine, which OpenXRay replaces; their
   files usually depend on it (ABR CS MOD Final, for one, crashes loading objects). The launcher marks

@@ -18,7 +18,7 @@ class Entry:
     is_dir: bool
     # Bytes for a file (what a link points to); None for a folder or a broken link.
     size: int | None
-    # "install", "mod", "engine", "link", "launcher", "saves", "yours", "folder" or "missing".
+    # "install", "mod", "modfile", "engine", "link", "launcher", "saves", "yours", "folder" or "missing".
     origin: str
     detail: str
     # Removing it can't break the game: a broken link, or a file the player (or a tool) put there.
@@ -34,6 +34,45 @@ def _under(path: str | Path, root: Path) -> bool:
         return os.path.commonpath([os.path.abspath(path), str(root)]) == str(root)
     except ValueError:
         return False
+
+
+class StandaloneClassifier:
+    """Says what the files of a standalone mod's folder are. It's all the mod's own, with no links or installs."""
+
+    def __init__(self, folder: Path, app_data: Path, protected: set[Path]):
+        self.folder = folder
+        self.app_data = app_data
+        # What the mod can't start without.
+        self.protected = protected
+
+    def read_only(self, _folder: Path) -> bool:
+        return False
+
+    def entry(self, path: Path) -> Entry:
+        is_dir = path.is_dir()
+        saves = _under(path, self.app_data)
+        origin = "folder" if is_dir else "saves" if saves else "modfile"
+        detail = "Saved game" if _under(path, self.app_data / "savedgames") else "Settings and logs" if saves else ""
+        if is_dir:
+            try:
+                count = len(os.listdir(path))
+                detail = f"{count} item{'s' if count != 1 else ''}"
+            except OSError:
+                detail = ""
+        size = None
+        if not is_dir:
+            try:
+                size = path.stat().st_size
+            except OSError:
+                pass
+        return Entry(path, is_dir, size, origin, detail, not is_dir and path not in self.protected)
+
+    def list(self, folder: Path) -> list[Entry]:
+        try:
+            paths = list(folder.iterdir())
+        except OSError:
+            return []
+        return sorted((self.entry(p) for p in paths), key=lambda e: (not e.is_dir, e.name.lower()))
 
 
 class Classifier:
@@ -141,7 +180,7 @@ def summary(entries: list[Entry]) -> str:
         if not e.is_dir:
             label = {"install": "from the install", "mod": "from mods", "launcher": "from the launcher",
                      "yours": "added by you", "saves": "saves and settings", "missing": "missing",
-                     "engine": "from the engine", "link": "other links"}[e.origin]
+                     "engine": "from the engine", "link": "other links", "modfile": "mod files"}[e.origin]
             counts[label] = counts.get(label, 0) + 1
     folders = sum(e.is_dir for e in entries)
     parts = [f"{len(entries)} item{'s' if len(entries) != 1 else ''}"]

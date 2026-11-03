@@ -14,10 +14,11 @@ gi.require_version("Adw", "1")
 gi.require_version("Pango", "1.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import appearance, detect, display, engine, fixes, mods, setup  # noqa: E402
+from . import appearance, detect, display, engine, fixes, mods, setup, standalone  # noqa: E402
 from .files_ui import FilesDialog  # noqa: E402
 from .moddb_ui import Downloads  # noqa: E402
 from .mods_ui import ModsDialog  # noqa: E402
+from .standalone_ui import ManageDialog  # noqa: E402
 from .config import Config  # noqa: E402
 from .games import GAMES  # noqa: E402
 
@@ -28,6 +29,7 @@ LANGUAGES = ["english", "russian", "german", "french", "italian", "spanish", "po
 FOLDER_HINT = {"soc": "gamedata.db0 and a bin folder",
                "cs": "a resources folder with resources.db0 (and patches/xpatch_10.db)",
                "cop": "Stalker-COP.exe, or a resources folder with resources.db3"}
+STANDALONE_ROW_HEIGHT = 55
 WHERE_WE_LOOK = ("OpenXRay's folder, Heroic, Steam, Lutris, ~/Games, Wine and Bottles prefixes, and "
                  "other drives")
 
@@ -40,14 +42,16 @@ class GameState:
     run: detect.Install | None = None
     issues: list[fixes.Issue] | None = None
     status: str = ""
-    icon: str = "emblem-ok-symbolic"
+    icon: str = "object-select-symbolic"
     can_play: bool = False
 
 
 class LauncherWindow(Adw.ApplicationWindow):
     def __init__(self, app: Adw.Application):
-        super().__init__(application=app, title="Zone Launcher", default_width=1120, default_height=600)
         self.config = Config.load()
+        # Tall enough for the standalone mods too, so nothing needs scrolling.
+        super().__init__(application=app, title="Zone Launcher", default_width=1120,
+                         default_height=600 + STANDALONE_ROW_HEIGHT * min(len(self.config.standalone_mods), 5))
         appearance.apply_style(self.config.style)
         appearance.ensure_icon(self.config.icon, self.config.monochrome_icon)
         css = Gtk.CssProvider()
@@ -57,7 +61,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.engine = engine.find_engine(self.config.engine_override or None)
         self.installs: list[detect.Install] = []
         # Game key -> running engine process, so a game can't be started twice.
-        self.running: dict[str, subprocess.Popen] = {}
+        # None: a standalone mod whose prefix is still being made.
+        self.running: dict[str, subprocess.Popen | None] = {}
         # Games the user stopped; their forced exit isn't reported as a crash.
         self.stopping: set[str] = set()
         # Game key -> message while fixes are being applied before launch.
@@ -93,6 +98,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         body = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=18, valign=Gtk.Align.CENTER,
                        margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
         body.append(self.cards)
+        self.standalone_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
+        body.append(self.standalone_holder)
         body.append(self.build_settings_bar())
         # Keep a maximized window tidy: centered, no wider than this. Scrolls only if made very small.
         clamp = Adw.Clamp(child=body, maximum_size=1280, tightening_threshold=1100)
@@ -108,11 +115,18 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.engine = engine.find_engine(self.config.engine_override or None)
         self.banner.set_revealed(self.engine is None)
         self.engine_label.set_label(str(self.engine.binary) if self.engine else "Not found")
-        self.installs = detect.find_installs(extra=self.config.extra_folders, searched=self.config.found_folders)
+        # A standalone mod can look like Shadow of Chernobyl (gamedata.db0, bin/XR_3DA.exe).
+        added = {Path(p).resolve() for p in self.config.standalone_mods}
+        self.installs = [i for i in detect.find_installs(extra=self.config.extra_folders,
+                                                         searched=self.config.found_folders)
+                         if i.path.resolve() not in added]
         while child := self.cards.get_first_child():
             self.cards.remove(child)
         for key in GAMES:
             self.cards.append(self.build_game_card(key))
+        while child := self.standalone_holder.get_first_child():
+            self.standalone_holder.remove(child)
+        self.standalone_holder.append(self.build_standalone_group())
         if self.details:
             self.fill_details(*self.details)
 
@@ -223,6 +237,48 @@ class LauncherWindow(Adw.ApplicationWindow):
         inner.append(play)
         return card
 
+    def build_standalone_group(self) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(title="Standalone mods")
+        if not self.config.standalone_mods:
+            group.set_description("Complete games in one folder, with their own Windows engine. They run with Wine.")
+        add = Gtk.Button(icon_name="list-add-symbolic", tooltip_text="Add a standalone mod's folder",
+                         css_classes=["flat"], valign=Gtk.Align.CENTER)
+        add.connect("clicked", lambda *_: Gtk.FileDialog(title="Choose the standalone mod's folder").select_folder(
+            self, None, self.on_standalone_chosen))
+        group.set_header_suffix(add)
+        for path in self.config.standalone_mods:
+            group.add(self.build_standalone_row(self.load_standalone(path)))
+        return group
+
+    def load_standalone(self, path: str) -> standalone.Standalone:
+        return standalone.load(path, self.config.standalone_launchers.get(path),
+                               self.config.standalone_settings.get(path))
+
+    def build_standalone_row(self, mod: standalone.Standalone) -> Adw.ActionRow:
+        running = mod.key in self.running
+        ready = bool(mod.exe) and (mod.path / mod.exe).is_file()
+        subtitle = f"{mod.exe} · {mod.path}" if ready else f"Needs attention: {mod.path}"
+        row = Adw.ActionRow(title=GLib.markup_escape_text(mod.name), subtitle=GLib.markup_escape_text(subtitle),
+                            subtitle_lines=1)
+        row.add_prefix(self.standalone_icon(mod))
+        manage = Gtk.Button(label="Manage", valign=Gtk.Align.CENTER, sensitive=not running,
+                            tooltip_text="Choose its launcher, Wine or Proton, check its files, and browse them")
+        manage.connect("clicked", lambda *_: ManageDialog(self, mod).present(self))
+        row.add_suffix(manage)
+        play = Gtk.Button(label="Stop" if running else "Play", valign=Gtk.Align.CENTER, sensitive=ready or running,
+                          css_classes=["destructive-action" if running else "suggested-action", "pill"])
+        play.connect("clicked", lambda *_: self.stop_standalone(mod) if running else self.play_standalone(mod))
+        row.add_suffix(play)
+        return row
+
+    def standalone_icon(self, mod: standalone.Standalone) -> Gtk.Image:
+        if mod.icon:
+            try:
+                return Gtk.Image(paintable=Gdk.Texture.new_from_filename(str(mod.icon)), pixel_size=48)
+            except GLib.Error:
+                pass
+        return Gtk.Image(icon_name="applications-games-symbolic", pixel_size=48)
+
     def show_mods(self, key: str):
         self.mods_dialog = ModsDialog(key, self.downloads, on_change=self.refresh)
         self.mods_dialog.connect("closed", lambda *_: setattr(self, "mods_dialog", None))
@@ -251,7 +307,7 @@ class LauncherWindow(Adw.ApplicationWindow):
                 checks.add(self.build_issue_row(state.install, issue))
             if not state.issues:
                 ok = Adw.ActionRow(title="Everything is in order")
-                ok.add_prefix(Gtk.Image(icon_name="emblem-ok-symbolic"))
+                ok.add_prefix(Gtk.Image(icon_name="object-select-symbolic"))
                 checks.add(ok)
             log = engine.latest_log(state.run) if state.run else None
             if log:
@@ -330,7 +386,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         manager.connect("clicked", lambda *_: self.open_file(run.path))
         browse.add_suffix(manager)
         browse.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
-        browse.connect("activated", lambda *_: FilesDialog(
+        browse.connect("activated", lambda *_: FilesDialog.for_game(
             install, run, self.engine.share if self.engine else None).present(self))
         group.add(browse)
 
@@ -524,11 +580,12 @@ class LauncherWindow(Adw.ApplicationWindow):
             title = f"Choose the {GAMES[key].title} folder" if key else "Choose a STALKER game folder"
         Gtk.FileDialog(title=title).select_folder(self, None, self.on_folder_chosen, key, search)
 
-    def on_folder_chosen(self, dialog, result, key: str | None, search: bool):
+    def chosen_folder(self, dialog, result) -> str | None:
+        """The folder picked in a file dialog; None if cancelled or (saying why) not usable."""
         try:
             folder = dialog.select_folder_finish(result)
         except GLib.Error:
-            return  # cancelled
+            return None  # cancelled
         path = folder.get_path()
         if path is None or path.startswith("/run/user/") and "/doc/" in path:
             # The Flatpak's file chooser hands out folders it can't otherwise reach through a
@@ -538,6 +595,147 @@ class LauncherWindow(Adw.ApplicationWindow):
                        "under /run/media, /media and /mnt). Move the game there, or give the Flatpak "
                        "access with:\n\nflatpak override --user --filesystem=<folder> "
                        "io.github.mktanner.ZoneLauncher")
+            return None
+        return path
+
+    def on_standalone_chosen(self, dialog, result):
+        path = self.chosen_folder(dialog, result)
+        if path is None:
+            return
+        path = str(standalone.locate(Path(path)))
+        mod = standalone.load(path)
+        if not mod.exe:
+            self.alert(f"No game found in {mod.name}",
+                       "A standalone mod's folder has a Windows program that starts it, such as bin/XR_3DA.exe, "
+                       "and this one has none. Choose the folder the mod's files are in.")
+            return
+        if path not in self.config.standalone_mods:
+            self.config.standalone_mods.append(path)
+            if not self.is_maximized() and not self.is_fullscreen():
+                self.set_default_size(self.get_width(), self.get_height() + STANDALONE_ROW_HEIGHT)
+        if path in self.config.extra_folders:
+            self.config.extra_folders.remove(path)
+        self.config.save()
+        self.refresh()
+        self.toast(f"Added {mod.name}")
+        # Show what was found: the launcher it picked, and whether anything's missing.
+        ManageDialog(self, self.load_standalone(path)).present(self)
+
+    def choose_standalone_launcher(self, mod: standalone.Standalone, launcher: str | None):
+        """None: go back to the launcher the mod's folder suggests."""
+        if launcher:
+            self.config.standalone_launchers[str(mod.path)] = launcher
+        else:
+            self.config.standalone_launchers.pop(str(mod.path), None)
+        self.config.save()
+        self.refresh()
+
+    def change_standalone_setting(self, mod: standalone.Standalone, name: str, value: str):
+        settings = self.config.standalone_settings.setdefault(str(mod.path), {})
+        if value:
+            settings[name] = value
+        else:
+            settings.pop(name, None)
+        if not settings:
+            self.config.standalone_settings.pop(str(mod.path))
+        self.config.save()
+        self.refresh()
+
+    def remove_standalone(self, mod: standalone.Standalone):
+        self.config.standalone_mods.remove(str(mod.path))
+        self.config.standalone_launchers.pop(str(mod.path), None)
+        self.config.standalone_settings.pop(str(mod.path), None)
+        self.config.save()
+        self.refresh()
+
+    def play_standalone(self, mod: standalone.Standalone, checked: bool = False):
+        if not checked and (wrong := standalone.problems(mod)):
+            dialog = Adw.AlertDialog(heading=f"{mod.name} may not start",
+                                     body="\n".join(f"{c.title}: {c.detail}" for c in wrong))
+            dialog.add_response("cancel", "Cancel")
+            dialog.add_response("manage", "Manage")
+            dialog.add_response("anyway", "Play Anyway")
+            dialog.set_response_appearance("anyway", Adw.ResponseAppearance.DESTRUCTIVE)
+            dialog.set_default_response("manage")
+            dialog.set_close_response("cancel")
+
+            def response(_d, answer):
+                if answer == "manage":
+                    ManageDialog(self, mod).present(self)
+                elif answer == "anyway":
+                    self.play_standalone(mod, checked=True)
+
+            dialog.connect("response", response)
+            dialog.present(self)
+            return
+        first_start = not mod.prefix.exists()
+        started = time.time()
+        # Holds its place among the running games until there's a process: a new prefix comes first.
+        self.running[mod.key] = None
+        self.refresh()
+        if first_start:
+            self.toast("Setting up Wine for this mod. The first start can take a minute.")
+
+        def exited(proc: subprocess.Popen | None, error: OSError | None):
+            self.running.pop(mod.key, None)
+            stopped = mod.key in self.stopping
+            self.stopping.discard(mod.key)
+            self.refresh()
+            if error:
+                self.toast(f"Couldn't start {mod.runner.name}: {error.strerror or error}")
+            elif proc:
+                self.report_standalone_exit(mod, started, proc.returncode, stopped)
+
+        def work():
+            proc = None
+            try:
+                standalone.prepare(mod)
+                if mod.key not in self.stopping:
+                    proc = standalone.launch(mod)
+                    self.running[mod.key] = proc
+                    proc.wait()
+            except OSError as e:
+                GLib.idle_add(exited, proc, e)
+                return
+            GLib.idle_add(exited, proc, None)
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def stop_standalone(self, mod: standalone.Standalone):
+        self.stopping.add(mod.key)
+        try:
+            standalone.stop(mod)
+        except OSError as e:
+            self.stopping.discard(mod.key)
+            self.toast(f"Couldn't stop the game: {e.strerror or e}")
+
+    def report_standalone_exit(self, mod: standalone.Standalone, started: float, code: int, stopped: bool):
+        log = mod.latest_log()
+        text = log.read_text(errors="replace") if log and log.stat().st_mtime >= started else ""
+        # A game can wait forever after this, so it's worth saying even if the user had to stop it.
+        if failure := standalone.shader_failure(text):
+            dialog = Adw.AlertDialog(heading=f"{mod.name} couldn't compile its shaders",
+                                     body=f"The shader compiler of Wine and Proton said:\n\n{failure}\n\n"
+                                          "Install Microsoft's DirectX libraries for this mod in Manage.")
+            dialog.add_response("close", "Close")
+            dialog.add_response("manage", "Manage")
+            dialog.set_response_appearance("manage", Adw.ResponseAppearance.SUGGESTED)
+            dialog.set_default_response("manage")
+            dialog.set_close_response("close")
+            dialog.connect("response", lambda _d, answer: answer == "manage" and ManageDialog(
+                self, self.load_standalone(str(mod.path))).present(self))
+            dialog.present(self)
+        elif stopped:
+            return
+        elif summary := engine.crash_summary(text):
+            self.show_crash(mod.name, "The log says:", summary, log)
+        elif code:
+            self.alert(f"{mod.name} stopped unexpectedly",
+                       f"{mod.runner.name} exited with status {code}. Its messages are in:\n\n{mod.wine_log}")
+
+    def on_folder_chosen(self, dialog, result, key: str | None, search: bool):
+        path = self.chosen_folder(dialog, result)
+        if path is None:
             return
         if search:
             self.set_searching(True)
@@ -761,7 +959,10 @@ class LauncherWindow(Adw.ApplicationWindow):
             one = len(suspects) == 1
             body = (f"{names} probably caused this: {'it ships its' if one else 'they ship their'} own engine, "
                     f"which OpenXRay replaces. Switch {'it' if one else 'them'} off in Mods. The log says:")
-        dialog = Adw.AlertDialog(heading=f"{GAMES[install.game].title} crashed", body=body)
+        self.show_crash(GAMES[install.game].title, body, summary, log)
+
+    def show_crash(self, title: str, body: str, summary: str, log: Path):
+        dialog = Adw.AlertDialog(heading=f"{title} crashed", body=body)
         text = Gtk.TextView(editable=False, monospace=True, wrap_mode=Gtk.WrapMode.WORD_CHAR,
                             top_margin=8, bottom_margin=8, left_margin=8, right_margin=8)
         text.get_buffer().set_text(summary)
