@@ -80,6 +80,7 @@ yourself, see [Building](#building).
   downloaded again. Clear Sky Complete goes on top of the game, so it gets its own copy of your Clear
   Sky, which stays as it is. G.A.M.M.A., Lost Alpha, Dead Air and True Stalker aren't one download
   from ModDB, so they link to their guide or page; afterwards, add their folder with **+**.
+  **Browse ModDB** there opens ModDB's list in your browser, to find others to add the same way.
   A tag beside each game and mod says how it runs: **Native** (OpenXRay), **Proton** or **Wine**.
   **Windows versions of the games** in Options also lists your games under Standalone mods, to run
   their original Windows programs with Proton or Wine. They run from a folder of links, with their

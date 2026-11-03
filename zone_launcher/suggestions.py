@@ -43,8 +43,7 @@ SUGGESTIONS = (
     Suggestion("Radiophobia 3", "A story-driven campaign, and one of the most polished standalone mods.",
                "https://www.moddb.com/mods/radiophobia", r"radiophobia",
                full_version=r"Radiophobia 3 ver\. [\d.]+"),
-    Suggestion("Call of Chernobyl", "The free-play sandbox Anomaly grew out of, with 32 maps. It brings its own data, and asks "
-                                    "that you own Call of Pripyat.",
+    Suggestion("Call of Chernobyl", "The free-play sandbox Anomaly grew out of. It asks that you own Call of Pripyat.",
                "https://www.moddb.com/mods/call-of-chernobyl", r"call.?of.?chernobyl",
                full_version=r"\[Release\] Call of Chernobyl [\d.]+", related_game="cop"),
     Suggestion("Lost Alpha", "The cut content of the original game made real. It comes as an installer in six parts: "

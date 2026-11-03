@@ -525,6 +525,11 @@ class GetModsDialog(Adw.PreferencesDialog):
                                      description="Each is a complete game in its own folder. A download opens in "
                                                  "your browser. When it's finished, the launcher unpacks the mod and "
                                                  "adds it, ready to play.")
+        # ModDB lists standalone mods under the game they were made from, and most come from the latest.
+        browse = Gtk.Button(label="Browse ModDB", valign=Gtk.Align.CENTER,
+                            tooltip_text="Find other standalone mods on ModDB, in your browser")
+        browse.connect("clicked", lambda *_: open_uri(self, moddb.list_url("cop", "mods")))
+        group.set_header_suffix(browse)
         # A suggestion -> its release on ModDB, and the box with its buttons.
         self.releases: dict[suggestions.Suggestion, tuple[moddb.Item, moddb.Details] | None] = {}
         self.actions: dict[suggestions.Suggestion, Gtk.Box] = {}
