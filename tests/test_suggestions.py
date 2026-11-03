@@ -34,6 +34,23 @@ class SuggestionTests(unittest.TestCase):
         self.assertIsNone(suggestions.latest_full_version(suggestion("Anomaly"), [item("Translation tool", "2022-12-07")]))
         self.assertIsNone(suggestions.latest_full_version(suggestion("G.A.M.M.A."), [item("G.A.M.M.A.", "2022-12-07")]))
 
+    def test_clear_sky_complete_prefers_the_archive_over_its_installer(self):
+        files = [item("Clear Sky Complete 1.1.3 .exe [recommended]", "2010-04-05"),
+                 item("Clear Sky Complete 1.1.3", "2010-03-27")]
+        chosen = suggestions.latest_full_version(suggestion("Clear Sky Complete"), files)
+        self.assertEqual(chosen.title, "Clear Sky Complete 1.1.3")
+        self.assertEqual(suggestion("Clear Sky Complete").game, "cs")
+
+    def test_clear_sky_complete_and_stalker_complete_are_told_apart(self):
+        folders = ["/x/Clear Sky Complete"]
+        self.assertTrue(suggestions.added(suggestion("Clear Sky Complete"), folders))
+        self.assertFalse(suggestions.added(suggestion("STALKER Complete"), folders))
+
+    def test_related_game(self):
+        self.assertEqual(suggestions.related_game(Path("/x/S.T.A.L.K.E.R. - Call of Chernobyl")), "cop")
+        self.assertEqual(suggestions.related_game(Path("/x/Clear Sky Complete")), "cs")
+        self.assertIsNone(suggestions.related_game(Path("/x/Something Else")))
+
     def test_every_suggestion_can_be_acted_on(self):
         for s in suggestions.SUGGESTIONS:
             self.assertTrue(s.full_version or s.guide, s.name)
@@ -94,6 +111,55 @@ class UnpackTests(unittest.TestCase):
 
     def test_free_space_of_a_folder_not_made_yet(self):
         self.assertGreater(standalone.free_space(self.tmp / "not" / "yet"), 0)
+
+
+class InstallOverGameTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        self.games = self.tmp / "Games"
+        self.game = self.tmp / "Clear Sky"
+        touch(self.game / "bin" / "xrEngine.exe")
+        touch(self.game / "resources" / "resources.db0")
+        (self.game / "fsgame.ltx").write_text("the store's")
+        self.fsgame = self.tmp / "fsgame.ltx"
+        self.fsgame.write_text("with saves beside it")
+
+    def install(self, *files: str) -> Path:
+        def extract(_archive, dest):
+            dest.mkdir(parents=True, exist_ok=True)
+            for file in files:
+                touch(dest / file)
+
+        with mock.patch.object(mods, "extract", extract):
+            return standalone.install_over_game(self.tmp / "mod.7z", self.games, "Clear Sky Complete", self.game, self.fsgame)
+
+    def test_the_mod_gets_its_own_copy_of_the_game(self):
+        target = self.install("CSC 1.1.3/gamedata/configs/a.ltx", "CSC 1.1.3/readme.txt")
+        self.assertEqual(target, self.games / "Clear Sky Complete")
+        self.assertTrue((target / "gamedata" / "configs" / "a.ltx").is_file())
+        self.assertTrue((target / "bin" / "xrEngine.exe").is_file())
+        self.assertFalse((target / "bin" / "xrEngine.exe").is_symlink())
+        self.assertEqual((target / "fsgame.ltx").read_text(), "with saves beside it")
+        self.assertEqual((self.game / "fsgame.ltx").read_text(), "the store's")
+        self.assertEqual([p.name for p in self.games.iterdir()], ["Clear Sky Complete"])
+
+    def test_the_mods_files_win_over_the_games(self):
+        (self.game / "bin" / "xrEngine.exe").write_text("the game's")
+        target = self.install("gamedata/a.ltx", "bin/xrEngine.exe")
+        self.assertNotEqual((target / "bin" / "xrEngine.exe").read_text(), "the game's")
+
+    def test_not_a_mod_for_the_game_leaves_nothing(self):
+        with self.assertRaises(mods.ModError):
+            self.install("readme.txt")
+        self.assertEqual(list(self.games.iterdir()), [])
+
+    def test_an_existing_folder_is_left_alone(self):
+        touch(self.games / "Clear Sky Complete" / "my save")
+        with self.assertRaises(mods.ModError):
+            self.install("gamedata/a.ltx")
+        self.assertEqual([p.name for p in (self.games / "Clear Sky Complete").iterdir()], ["my save"])
 
 
 class AlreadyDownloadedTests(unittest.TestCase):

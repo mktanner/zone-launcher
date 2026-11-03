@@ -74,25 +74,32 @@ yourself, see [Building](#building).
   and keeps its own saves and settings; each mod gets its own Wine prefix under
   `~/.local/share/zone-launcher/standalone`. You need Wine with 32-bit support, or Proton. The
   launcher's display and language settings don't apply to these mods, which have their own.
-  **Get Mods** suggests popular ones. STALKER Complete, Anomaly, Radiophobia 3 and Call of Chernobyl
-  download in your browser from ModDB, and are then unpacked to `~/Games` (or a folder you choose)
-  and added, ready to play; an archive already in your Downloads folder isn't downloaded again.
-  G.A.M.M.A., Lost Alpha, Dead Air and True Stalker aren't one download from ModDB, so they link to
-  their guide or page; afterwards, add their folder with **+**.
+  **Get Mods** suggests popular ones. STALKER Complete, Clear Sky Complete, Anomaly, Radiophobia 3
+  and Call of Chernobyl download in your browser from ModDB, and are then unpacked to `~/Games` (or a
+  folder you choose) and added, ready to play; an archive already in your Downloads folder isn't
+  downloaded again. Clear Sky Complete goes on top of the game, so it gets its own copy of your Clear
+  Sky, which stays as it is. G.A.M.M.A., Lost Alpha, Dead Air and True Stalker aren't one download
+  from ModDB, so they link to their guide or page; afterwards, add their folder with **+**.
+  A tag beside each game and mod says how it runs: **Native** (OpenXRay), **Proton** or **Wine**.
+  **Windows versions of the games** in Options also lists your games under Standalone mods, to run
+  their original Windows programs with Proton or Wine. They run from a folder of links, with their
+  own saves, so your game folders aren't changed.
   **Manage** on a mod chooses which program starts it (popular engines are picked automatically,
   and any `.exe` in the folder can be chosen by hand), checks that it has what it needs (by reading
   which libraries the program loads and asking Wine which it provides, so mods don't need listing
   one by one), and browses, opens and trashes its files. Under **Wine and Proton** it chooses what
-  runs the mod. **Automatic** is recommended and needs no setting up: it uses the best you have, in
-  the order CachyOS Proton, Proton Experimental, GE-Proton, Steam's other versions, then the
-  system's Wine, and moves to new versions as they're installed. You can also choose any version of
+  runs the mod. **Automatic** is recommended and needs no setting up: it uses the latest Proton you
+  have (in the order CachyOS Proton, Proton Experimental, GE-Proton, Steam's other versions), or the
+  system's Wine without one, and moves to new versions as they're installed. You can also choose any version of
   Proton or Wine build found in Steam, Heroic, Lutris and Bottles, or a folder of your own. It also
   sets launch arguments, DLL overrides and environment variables, opens Wine Configuration and the
   prefix, and resets the prefix.
   **Microsoft's DirectX libraries**: Wine's and Proton's shader compilers can't build every game's
   shaders (Anomaly stops with `E5017`), so a mod that would use them gets Microsoft's copies when
   you press Play, from the DirectX installer in your Steam folder. Without Steam, Manage warns about
-  it: choose the DLLs or the `.cab` files of Microsoft's DirectX installer yourself. The Flatpak needs
+  it: choose the DLLs or the `.cab` files of Microsoft's DirectX installer yourself. If a mod wants a
+  game's files, **Game files** in Manage copies what its folder doesn't have from a game you've
+  installed, without overwriting anything. The Flatpak needs
   permission to start programs outside its sandbox to reach Wine and Proton, so it isn't strictly
   sandboxed.
 - **Options** (the gear next to "Add a game folder"): a light, dark or system style, and the icon

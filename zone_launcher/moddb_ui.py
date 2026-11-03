@@ -12,7 +12,7 @@ gi.require_version("Gsk", "4.0")
 gi.require_version("Graphene", "1.0")
 from gi.repository import Adw, Gdk, GLib, GObject, Graphene, Gsk, Gtk  # noqa: E402
 
-from . import downloads, files, moddb, mods, standalone  # noqa: E402
+from . import downloads, files, moddb, mods  # noqa: E402
 
 # Thumbnails load a few at a time, so a list's 30 don't open 30 connections at once; download sizes
 # (one file page each) even fewer.
@@ -195,15 +195,15 @@ class Downloads:
             if not pending.verify(path):
                 raise mods.ModError(f"{path.name} doesn't match the file on ModDB (its checksum differs), so "
                                     "it's damaged or a different file. Download it again.")
-            if pending.destination:
-                return standalone.unpack(path, pending.destination)
+            if pending.unpack:
+                return pending.unpack(path)
             return mods.install(pending.game, path, name=pending.title, origin=pending.origin)
 
         def done(mod, error):
             self.installing.remove(pending)
             if error:
                 self.notify(f"Couldn't install {pending.title}: {error}")
-            elif pending.destination:
+            elif pending.unpack:
                 self.on_standalone(mod)
                 self.notify(f"Installed {pending.title}. Press Play to start it.")
             else:

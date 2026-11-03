@@ -13,6 +13,7 @@ from gi.repository import Adw, Gio, GLib, Gtk  # noqa: E402
 
 from . import downloads, files, moddb, mods, standalone, suggestions  # noqa: E402
 from .files_ui import FilesDialog  # noqa: E402
+from .games import GAMES  # noqa: E402
 from .moddb_ui import Thumbnail, in_background, open_uri, pending_row  # noqa: E402
 
 
@@ -25,9 +26,7 @@ class ManageDialog(Adw.PreferencesDialog):
         page = Adw.PreferencesPage()
         self.add(page)
 
-        launcher_group = Adw.PreferencesGroup(title="Launcher",
-                                              description="The program Play starts. Popular engines are picked "
-                                                          "automatically.")
+        launcher_group = Adw.PreferencesGroup(title="Launcher")
         pick = Gtk.Button(label="Choose File…", css_classes=["flat"], valign=Gtk.Align.CENTER,
                           tooltip_text="Pick any Windows program in the mod's folder")
         pick.connect("clicked", self.on_pick)
@@ -43,19 +42,26 @@ class ManageDialog(Adw.PreferencesDialog):
         self.fill_checks()
 
         page.add(self.build_wine_group())
+        self.windows_game = standalone.windows_game(mod)
+        if not self.windows_game and (copy_group := self.build_copy_group()):
+            page.add(copy_group)
 
         files_group = Adw.PreferencesGroup(title="Files")
-        browse = Adw.ActionRow(title="Browse Files", subtitle="Saves, settings, logs and the mod's own files",
+        browse = Adw.ActionRow(title="Browse Files", subtitle="Saves, settings and logs" if standalone.windows_game(mod)
+                               else "Saves, settings, logs and the mod's own files",
                                activatable=True)
         browse.add_prefix(Gtk.Image(icon_name="folder-symbolic"))
         browse.add_suffix(Gtk.Image(icon_name="go-next-symbolic"))
         browse.connect("activated", self.on_browse)
         files_group.add(browse)
-        files_group.add(self.open_row("Open Mod Folder", "folder-open-symbolic", mod.path))
+        if not self.windows_game:
+            files_group.add(self.open_row("Open Mod Folder", "folder-open-symbolic", mod.path))
         if mod.wine_log.is_file():
             files_group.add(self.open_row("Wine's Log", "text-x-generic-symbolic", mod.wine_log))
         page.add(files_group)
 
+        if self.windows_game:
+            return  # It comes and goes with the game and the option in Options.
         remove_group = Adw.PreferencesGroup()
         forget = Adw.ActionRow(title="Remove From List", subtitle="Keeps the mod's files", activatable=True)
         forget.add_prefix(Gtk.Image(icon_name="list-remove-symbolic"))
@@ -120,8 +126,7 @@ class ManageDialog(Adw.PreferencesDialog):
     # ----- what runs it -----------------------------------------------------------------------------
 
     def build_wine_group(self) -> Adw.PreferencesGroup:
-        recommendation = ("Automatic uses the best you have: CachyOS Proton, then Proton Experimental, GE-Proton and "
-                          "Steam's other versions." if standalone.best_runner().is_proton else
+        recommendation = ("Automatic uses the latest version of Proton you have." if standalone.best_runner().is_proton else
                           "For the smoothest games, install Proton Experimental with Steam, or proton-cachyos. "
                           "Automatic will use it.")
         group = Adw.PreferencesGroup(title="Wine and Proton", description=recommendation)
@@ -364,6 +369,73 @@ class ManageDialog(Adw.PreferencesDialog):
         dialog.connect("response", response)
         dialog.present(self.window)
 
+    # ----- the game's files ------------------------------------------------------------------------
+
+    def build_copy_group(self) -> Adw.PreferencesGroup | None:
+        self.copy_sources = self.window.found_games()
+        if not self.copy_sources:
+            return None
+        group = Adw.PreferencesGroup(title="Game files", description="Most complete mods have everything they need. "
+                                                                     "If one wants a game's files, copy them here.")
+        keys = [key for key, _path in self.copy_sources]
+        self.copy_from_row = Adw.ComboRow(title="Copy from",
+                                          model=Gtk.StringList.new([GAMES[key].title for key in keys]))
+        related = suggestions.related_game(self.mod.path)
+        self.copy_from_row.set_selected(keys.index(related) if related in keys else 0)
+        self.copy_from_row.connect("notify::selected", lambda *_: self.fill_copy())
+        group.add(self.copy_from_row)
+        self.copy_row = Adw.ActionRow(title="Copy Missing Files", use_markup=False)
+        self.copy_spinner = Gtk.Spinner(visible=False, valign=Gtk.Align.CENTER)
+        self.copy_button = Gtk.Button(label="Copy", valign=Gtk.Align.CENTER)
+        self.copy_button.connect("clicked", self.on_copy)
+        self.copy_row.add_suffix(self.copy_spinner)
+        self.copy_row.add_suffix(self.copy_button)
+        group.add(self.copy_row)
+        self.fill_copy()
+        return group
+
+    def copy_source(self) -> tuple[Path, list[Path]]:
+        """A game's folder and the language pack that goes with it."""
+        key, path = self.copy_sources[self.copy_from_row.get_selected()]
+        return path, self.window.language_packs(key)
+
+    def fill_copy(self):
+        source, packs = self.copy_source()
+        try:
+            missing = standalone.missing_files(source, self.mod.path, packs)
+        except OSError as e:
+            self.copy_row.set_subtitle(f"Couldn't read the game's folder: {e.strerror or e}")
+            self.copy_button.set_sensitive(False)
+            return
+        size = sum(size for _rel, size in missing)
+        self.copy_row.set_subtitle(f"{len(missing)} files ({files.human_size(size)}) this mod's folder doesn't have. "
+                                   "Nothing is overwritten." if missing else "This mod's folder has them all.")
+        self.copy_button.set_sensitive(bool(missing))
+
+    def on_copy(self, _btn):
+        source, packs = self.copy_source()
+        needed = sum(size for _rel, size in standalone.missing_files(source, self.mod.path, packs))
+        free = standalone.free_space(self.mod.path)
+        if free < needed:
+            self.add_toast(Adw.Toast(title=f"That needs {files.human_size(needed)}, and the mod's drive has "
+                                           f"{files.human_size(free)} free"))
+            return
+        self.copy_spinner.set_visible(True)
+        self.copy_spinner.set_spinning(True)
+        self.copy_button.set_sensitive(False)
+
+        def done(count, error):
+            self.copy_spinner.set_visible(False)
+            self.copy_spinner.set_spinning(False)
+            self.fill_copy()
+            self.fill_launchers()
+            self.mod = self.window.load_standalone(str(self.mod.path))
+            self.fill_checks()
+            self.window.refresh()
+            self.add_toast(Adw.Toast(title=f"Couldn't copy them: {error}" if error else f"Copied {count} files"))
+
+        in_background(lambda: standalone.copy_missing(source, self.mod.path, packs), done)
+
     # ----- what it needs ---------------------------------------------------------------------------
 
     def fill_checks(self):
@@ -389,8 +461,10 @@ class ManageDialog(Adw.PreferencesDialog):
     def on_browse(self, *_):
         mod = self.mod
         protected = {mod.path / "fsgame.ltx"} | ({mod.path / mod.exe} if mod.exe else set())
-        places = [("Mod folder", mod.path), ("Saved games", mod.app_data / "savedgames"),
-                  ("Settings and logs", mod.app_data)]
+        places = [("Saved games", mod.app_data / "savedgames"), ("Settings and logs", mod.app_data)]
+        # A game's Windows version is links to the game's own folder, whose files aren't for changing from here.
+        if not self.windows_game:
+            places.insert(0, ("Mod folder", mod.path))
         FilesDialog(f"{mod.name} files", places,
                     files.StandaloneClassifier(mod.path, mod.app_data, protected)).present(self.window)
 
@@ -513,10 +587,13 @@ class GetModsDialog(Adw.PreferencesDialog):
             box.append(page_button(label=suggestion.guide or "Open Page"))
         else:
             box.append(page_button(icon_name="adw-external-link-symbolic", css_classes=["flat"]))
+        game = self.game_for(suggestion)
         if suggestions.added(suggestion, self.window.config.standalone_mods):
             box.append(Gtk.Label(label="Added", css_classes=["dim-label", "caption"]))
         elif not release:
             pass
+        elif suggestion.game and not game:
+            box.append(Gtk.Label(label=f"Needs {GAMES[suggestion.game].title}", css_classes=["dim-label", "caption"]))
         elif any(p.title == suggestion.name for p in self.in_progress()):
             box.append(Gtk.Label(label="In progress", css_classes=["dim-label", "caption"]))
         else:
@@ -531,12 +608,19 @@ class GetModsDialog(Adw.PreferencesDialog):
             button.connect("clicked", lambda _b: self.on_get(suggestion))
             box.append(button)
 
+    def game_for(self, suggestion: suggestions.Suggestion) -> Path | None:
+        """The folder of the game a mod goes on top of, if it's found."""
+        return next((path for key, path in self.window.found_games() if key == suggestion.game), None)
+
     def in_progress(self) -> list[downloads.Pending]:
         return self.downloads.waiting(standalone.GAME) + self.downloads.busy(standalone.GAME)
 
     def on_get(self, suggestion: suggestions.Suggestion):
         _item, details = self.releases[suggestion]
         needed = int((details.size or 0) * standalone.UNPACK_FACTOR)
+        if game := self.game_for(suggestion):
+            needed += sum(size for _rel, size in standalone.missing_files(game, self.folder() / suggestion.name,
+                                                                          self.window.language_packs(suggestion.game)))
         free = standalone.free_space(self.folder())
         if free >= needed:
             self.start(suggestion)
@@ -555,9 +639,16 @@ class GetModsDialog(Adw.PreferencesDialog):
 
     def start(self, suggestion: suggestions.Suggestion):
         _item, details = self.releases[suggestion]
+        folder, game = self.folder(), self.game_for(suggestion)
+        if game:
+            fsgame = self.window.windows_fsgame(suggestion.game)
+            packs = self.window.language_packs(suggestion.game)
+            unpack = lambda path: standalone.install_over_game(path, folder, suggestion.name, game, fsgame, packs)  # noqa: E731
+        else:
+            unpack = lambda path: standalone.unpack(path, folder)  # noqa: E731
         # Created before the browser starts, so the file isn't counted as already there.
         pending = downloads.Pending(game=standalone.GAME, title=suggestion.name, filename=details.filename,
-                                    size=details.size, md5=details.md5, destination=self.folder(),
+                                    size=details.size, md5=details.md5, unpack=unpack,
                                     origin={"site": "ModDB", "mod": suggestion.name, "page": suggestion.page,
                                             "file": details.url})
         if have := downloads.already_downloaded(details.filename, details.size):

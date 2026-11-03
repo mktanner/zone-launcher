@@ -30,6 +30,8 @@ class Config:
     standalone_settings: dict[str, dict[str, str]] = field(default_factory=dict)
     # Where standalone mods the launcher downloads are unpacked. Empty: standalone.default_folder().
     standalone_folder: str = ""
+    # Also list the Windows versions of the games found, to run and manage like standalone mods.
+    windows_versions: bool = False
     extra_args: str = ""
     language: str = "english"
     # "native", "keep" (use the in-game setting) or "WIDTHxHEIGHT".

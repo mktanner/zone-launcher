@@ -51,11 +51,14 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.config = Config.load()
         # Tall enough for the standalone mods too, so nothing needs scrolling.
         super().__init__(application=app, title="Zone Launcher", default_width=1120,
-                         default_height=600 + STANDALONE_ROW_HEIGHT * min(len(self.config.standalone_mods), 5))
+                         default_height=600 + STANDALONE_ROW_HEIGHT * min(
+                             len(self.config.standalone_mods) + 3 * self.config.windows_versions, 5))
         appearance.apply_style(self.config.style)
         appearance.ensure_icon(self.config.icon, self.config.monochrome_icon)
         css = Gtk.CssProvider()
-        css.load_from_string(".monochrome { filter: grayscale(1); }")
+        css.load_from_string(".monochrome { filter: grayscale(1); }\n"
+                             ".tag { font-size: smaller; padding: 1px 8px; border-radius: 99px; "
+                             "background: alpha(currentColor, 0.12); }")
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.engine = engine.find_engine(self.config.engine_override or None)
@@ -187,6 +190,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         title_row.append(Gtk.Image(icon_name=game.icon, pixel_size=48))
         title_row.append(Gtk.Label(label=game.title, css_classes=["title-3"], wrap=True, xalign=0,
                                    hexpand=True))
+        title_row.append(Gtk.Label(label="Native", css_classes=["tag"], valign=Gtk.Align.CENTER,
+                                   tooltip_text="Runs on Linux directly, with OpenXRay"))
         inner.append(title_row)
 
         status = Gtk.Box(spacing=8)
@@ -246,7 +251,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             group.set_description(f"Unpacking {busy[0].title}…")
         elif waiting:
             group.set_description(f"Waiting for {waiting[0].title} to download in your browser…")
-        elif not self.config.standalone_mods:
+        elif not self.config.standalone_mods and not self.config.windows_versions:
             group.set_description("Complete games in one folder, with their own Windows engine. They run with Proton "
                                   "or Wine.")
         get = Gtk.Button(label="Get Mods…", css_classes=["flat"], valign=Gtk.Align.CENTER,
@@ -262,7 +267,39 @@ class LauncherWindow(Adw.ApplicationWindow):
         group.set_header_suffix(buttons)
         for path in self.config.standalone_mods:
             group.add(self.build_standalone_row(self.load_standalone(path)))
+        for mod in self.windows_versions():
+            group.add(self.build_standalone_row(mod))
         return group
+
+    def found_games(self) -> list[tuple[str, Path]]:
+        """The games the launcher knows about, with the folder of the install chosen for each."""
+        return [(key, setup.linked_source(install.path) or install.path) for key in GAMES
+                if (install := self.selected_install(key))]
+
+    def language_packs(self, game: str) -> list[Path]:
+        """The language pack a game's files go with: a store may keep it outside the game's folder."""
+        install = self.selected_install(game)
+        packs = fixes.available_language_packs(install) if install else {}
+        return packs.get(self.config.language) or packs.get("english") or next(iter(packs.values()), [])
+
+    def windows_fsgame(self, game: str) -> Path | None:
+        """The file list a game's files need outside their store's folder, with saves beside them."""
+        if game == "soc":
+            return fixes.SOC_FSGAME
+        return self.engine.fsgame if self.engine else None
+
+    def windows_versions(self) -> list[standalone.Standalone]:
+        if not self.config.windows_versions:
+            return []
+        versions = []
+        for key, path in self.found_games():
+            if fsgame := self.windows_fsgame(key):
+                try:
+                    folder = standalone.link_windows_version(key, path, fsgame, self.language_packs(key))
+                    versions.append(self.load_standalone(str(folder)))
+                except OSError as e:
+                    self.toast(f"Couldn't set up {GAMES[key].title}'s Windows version: {e.strerror or e}")
+        return versions
 
     def load_standalone(self, path: str) -> standalone.Standalone:
         return standalone.load(path, self.config.standalone_launchers.get(path),
@@ -275,6 +312,9 @@ class LauncherWindow(Adw.ApplicationWindow):
         row = Adw.ActionRow(title=GLib.markup_escape_text(mod.name), subtitle=GLib.markup_escape_text(subtitle),
                             subtitle_lines=1)
         row.add_prefix(self.standalone_icon(mod))
+        runner = mod.runner
+        row.add_suffix(Gtk.Label(label="Proton" if runner.is_proton else "Wine", css_classes=["tag"],
+                                 valign=Gtk.Align.CENTER, tooltip_text=f"Runs with {runner.name}"))
         manage = Gtk.Button(label="Manage", valign=Gtk.Align.CENTER, sensitive=not running,
                             tooltip_text="Choose its launcher, Wine or Proton, check its files, and browse them")
         manage.connect("clicked", lambda *_: ManageDialog(self, mod).present(self))
@@ -286,6 +326,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         return row
 
     def standalone_icon(self, mod: standalone.Standalone) -> Gtk.Image:
+        if game := standalone.windows_game(mod):
+            return Gtk.Image(icon_name=GAMES[game].icon, pixel_size=48)
         if mod.icon:
             try:
                 return Gtk.Image(paintable=Gdk.Texture.new_from_filename(str(mod.icon)), pixel_size=48)
@@ -528,6 +570,25 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         mono.connect("notify::active", mono_toggled)
         icons.add(mono)
+
+        mods_group = Adw.PreferencesGroup(title="Standalone mods")
+        page.add(mods_group)
+        windows = Adw.SwitchRow(title="Windows versions of the games",
+                                subtitle="List the games you have under Standalone mods too, to run their original "
+                                         "Windows programs with Proton or Wine and manage them there. They keep their "
+                                         "own saves, and your game folders stay as they are.",
+                                active=self.config.windows_versions)
+
+        def windows_toggled(row, _pspec):
+            self.config.windows_versions = row.get_active()
+            self.config.save()
+            if row.get_active() and not self.is_maximized() and not self.is_fullscreen():
+                self.set_default_size(self.get_width(),
+                                      self.get_height() + STANDALONE_ROW_HEIGHT * len(self.found_games()))
+            self.refresh()
+
+        windows.connect("notify::active", windows_toggled)
+        mods_group.add(windows)
         show_previews()
         dialog.present(self)
 

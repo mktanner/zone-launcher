@@ -13,12 +13,14 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
 from . import detect, mods, pe
 from .engine import engine_environment
+from .games import GAMES
 
 ICONS = ("Linux/icon.png", "icon.png")
 # Run the DXVK and runtime DLLs a mod bundles, not Wine's own. BugTrap needs Wine's dbghelp.
@@ -27,7 +29,7 @@ DLL_OVERRIDES = "dbghelp=b;d3dcompiler_43=n,b;msvcr71=n,b;msvcr80=n,b;msvcp71=n,
 NO_DOTNET = "mscoree=;mshtml="
 # Where to look for programs, and what's never the one that starts the game.
 SEARCH_DEPTH = 2
-SKIP_FOLDERS = {"tools", "setup", "redist", "_commonredist", "directx", "support", "appdata", "_appdata_",
+SKIP_FOLDERS = {"dedicated", "tools", "setup", "redist", "_commonredist", "directx", "support", "appdata", "_appdata_",
                 "gamedata", "db", "resources", "levels", "patches", "mods", "localization", "linux"}
 NOT_LAUNCHERS = re.compile(r"(unins|setup|install|vc_?redist|dxsetup|dxwebsetup|crash|bugreport|notification_helper)",
                            re.I)
@@ -42,8 +44,15 @@ _wine_libraries: dict[str, set[str]] = {}
 # Microsoft's libraries that compile a game's shaders. Wine and Proton have their own, but those
 # can't compile everything: Anomaly's shaders stop them with "E5017: not yet implemented feature".
 DIRECTX_LIBRARY = re.compile(r"(d3dcompiler_\d+|d3dx\d*_\d+)\.dll", re.I)
+# The first d3dx with a separate compiler.
+COMPILER_SINCE = 33
+# Newer d3dx9s hand it the oldest shaders (ps_1_x), and Wine's copy can't compile them. Call of
+# Chernobyl then says the video card doesn't meet its requirements.
+LEGACY_COMPILER = "d3dx9_31.dll"
 # Where they're found, as the installers Steam downloads for its games.
 DIRECTX_REDIST = "_CommonRedist/DirectX"
+# What's the launcher's, the store's or the player's in a game's folder, rather than the game's.
+NEVER_COPIED = {"fsgame.ltx", "fsgame.ltx.original", "_appdata_", "userdocs", detect.MARKER}
 # Stands for standalone mods among the games whose downloads are waited for.
 GAME = "standalone"
 # How much room to expect a mod to need, for the size of its archive: Anomaly unpacks to about twice its.
@@ -185,6 +194,9 @@ def app_data_folder(folder: Path) -> str | None:
         return None
     match = re.search(r"^\s*\$app_data_root\$\s*=(.*)$", text, re.M)
     fields = [f.strip() for f in match.group(1).split("|")] if match else []
+    # Either "true| false| $fs_root$| appdata\\" or, relative to the game's folder, "true| false| appdata\\".
+    if len(fields) == 3 and not fields[2].startswith("$"):
+        fields.insert(2, "$fs_root$")
     if len(fields) < 4 or fields[2] != "$fs_root$":
         return None
     name = fields[3].rstrip("\\/")
@@ -216,7 +228,8 @@ def _rank(rel: str, avx: bool) -> tuple:
 def find_launchers(folder: Path) -> list[str]:
     """The programs that could start the game, relative to the folder, best first."""
     found = []
-    for root, folders, names in os.walk(folder):
+    # A game's Windows version has links to its folders. Only SEARCH_DEPTH down, so they can't loop.
+    for root, folders, names in os.walk(folder, followlinks=True):
         here = Path(root).relative_to(folder)
         if len(here.parts) >= SEARCH_DEPTH:
             folders.clear()
@@ -247,6 +260,69 @@ def load(path: str | Path, launcher: str | None = None, settings: dict[str, str]
     return Standalone(path, " ".join(path.name.replace("_", " ").split()), launcher, Settings(**known))
 
 
+def windows_folder(game: str) -> Path:
+    """Where a game's Windows version runs from: links to its files, so its own folder isn't written to."""
+    return Path.home() / ".local" / "share" / "zone-launcher" / "windows" / f"{GAMES[game].title} (Windows)"
+
+
+def windows_game(mod: Standalone) -> str | None:
+    """The game a mod is the Windows version of, if it is one."""
+    return next((key for key in GAMES if mod.path == windows_folder(key)), None)
+
+
+def _link_files(wanted: dict[str, Path], target: Path) -> None:
+    target.mkdir(parents=True, exist_ok=True)
+    for entry in target.iterdir():
+        if entry.is_symlink() and wanted.get(entry.name) != Path(os.readlink(entry)):
+            entry.unlink()
+    for name, entry in wanted.items():
+        if not (target / name).is_symlink() and not (target / name).exists():
+            (target / name).symlink_to(entry)
+
+
+def link_windows_version(game: str, source: Path, fsgame: Path, language_packs: Iterable[Path] = ()) -> Path:
+    """Sets up or refreshes a game's Windows version, with the file list and saves of its own in the folder.
+    Language packs a store keeps elsewhere are linked in with the game's own localization folder."""
+    target = windows_folder(game)
+    _link_files({entry.name: entry for entry in source.iterdir()
+                 if entry.name not in NEVER_COPIED and entry.name != "localization"}, target)
+    localization = source / "localization"
+    _link_files({entry.name: entry for entry in (*(localization.iterdir() if localization.is_dir() else ()), *language_packs)},
+                target / "localization")
+    if not (target / "fsgame.ltx").exists():
+        shutil.copyfile(fsgame, target / "fsgame.ltx")
+    (target / detect.MARKER).write_text(f"{source}\n")
+    return target
+
+
+def _missing_paths(source: Path, target: Path, language_packs: Iterable[Path]) -> dict[str, Path]:
+    missing = {}
+    for root, folders, names in os.walk(source):
+        here = Path(root).relative_to(source)
+        if not here.parts:
+            folders[:] = [f for f in folders if f not in NEVER_COPIED]
+            names = [n for n in names if n not in NEVER_COPIED and not n.startswith("goggame-")]
+        missing |= {(here / name).as_posix(): Path(root) / name for name in names if not (target / here / name).exists()}
+    missing |= {f"localization/{pack.name}": pack for pack in language_packs
+                if not (target / "localization" / pack.name).exists()}
+    return missing
+
+
+def missing_files(source: Path, target: Path, language_packs: Iterable[Path] = ()) -> list[tuple[str, int]]:
+    """The files of a game a folder doesn't have: (their paths relative to it, their sizes). A store
+    may keep the game's language packs elsewhere, so they're counted separately."""
+    return [(rel, path.stat().st_size) for rel, path in _missing_paths(source, target, language_packs).items()]
+
+
+def copy_missing(source: Path, target: Path, language_packs: Iterable[Path] = ()) -> int:
+    """Copies the files of a game a folder doesn't have, and how many. Nothing there is overwritten."""
+    missing = _missing_paths(source, target, language_packs)
+    for rel, path in missing.items():
+        (target / rel).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(path, target / rel)
+    return len(missing)
+
+
 def default_folder() -> Path:
     """Where downloaded mods go unless the user says otherwise."""
     return Path.home() / "Games"
@@ -260,6 +336,36 @@ def free_space(folder: Path) -> int:
         return shutil.disk_usage(folder).free
     except OSError:
         return 0
+
+
+def _mod_root(unpacked: Path) -> Path | None:
+    """The folder of a mod that goes on top of a game: the one with its gamedata folder."""
+    found = sorted((p for p in unpacked.rglob("gamedata") if p.is_dir()), key=lambda p: len(p.parts))
+    return found[0].parent if found else None
+
+
+def install_over_game(archive: Path, folder: Path, name: str, game: Path, fsgame: Path | None,
+                      language_packs: Iterable[Path] = ()) -> Path:
+    """Gives a mod that goes on top of a game its own copy of that game, which stays as it is. Nothing
+    is left behind if it isn't that kind of mod."""
+    target = folder / name
+    if target.exists():
+        raise mods.ModError(f"{target} already exists. Add that folder with +, or move it out of the way.")
+    staging = folder / f".unpacking-{archive.stem}"
+    shutil.rmtree(staging, ignore_errors=True)
+    folder.mkdir(parents=True, exist_ok=True)
+    try:
+        mods.extract(archive, staging)
+        root = _mod_root(staging)
+        if not root:
+            raise mods.ModError(f"{archive.name} has no gamedata folder, so it doesn't look like a mod for this game.")
+        copy_missing(game, root, language_packs)
+        if fsgame:
+            shutil.copyfile(fsgame, root / "fsgame.ltx")
+        root.rename(target)
+        return target
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
 
 
 def unpack(archive: Path, folder: Path) -> Path:
@@ -394,18 +500,25 @@ def wine_libraries(runner: Runner) -> set[str]:
 # ----- what it loads -----------------------------------------------------------------------------
 
 
-def _loaded_libraries(folder: Path, exe: str) -> tuple[dict[str, str], set[str]]:
-    """Follows the DLLs a program loads at startup, and those they load: (their names by lower-case
-    name, those the mod bundles). Windows looks beside the program and in the working folder."""
-    start = folder / exe
-    bundled: dict[str, Path] = {}
-    for place in (folder, start.parent):
+def _files_found(folder: Path, exe: str) -> dict[str, Path]:
+    """The files by lower-case name where Windows looks for a program's DLLs: beside it and in the working folder."""
+    found: dict[str, Path] = {}
+    for place in (folder, (folder / exe).parent):
         try:
-            bundled |= {p.name.lower(): p for p in place.iterdir() if p.is_file()}
+            found |= {p.name.lower(): p for p in place.iterdir() if p.is_file()}
         except OSError:
             pass
+    return found
+
+
+def _loaded_libraries(folder: Path, exe: str) -> tuple[dict[str, str], set[str]]:
+    """Follows the DLLs a program loads at startup, and those they load: (their names by lower-case
+    name, those the mod bundles)."""
+    start = folder / exe
+    bundled = _files_found(folder, exe)
     seen: dict[str, str] = {}
-    queue = [start]
+    # The program loads its renderers and game DLLs while running, so they aren't among its imports.
+    queue = [start, *(p for p in bundled.values() if p.parent == start.parent and p.suffix.lower() == ".dll")]
     while queue:
         program = pe.read(queue.pop())
         for name in program.imports if program else ():
@@ -434,8 +547,17 @@ def wanted_libraries(mod: Standalone, exe: str | None = None) -> set[str]:
     """Microsoft's DirectX libraries (in lower case) a program of the mod would use Wine's copies of."""
     if not (exe := exe or mod.exe):
         return set()
-    seen, bundled = _loaded_libraries(mod.path, exe)
-    return {key for key in set(seen) - bundled if DIRECTX_LIBRARY.fullmatch(key)}
+    seen, _bundled = _loaded_libraries(mod.path, exe)
+    found = set(_files_found(mod.path, exe))
+    wanted = {key for key in set(seen) - found if DIRECTX_LIBRARY.fullmatch(key)}
+    # Microsoft's d3dx compiles shaders with the compiler of its own version, which isn't among its imports.
+    for key in list(wanted):
+        if (version := re.fullmatch(r"d3dx\d*_(\d+)\.dll", key)) and int(version[1]) >= COMPILER_SINCE:
+            wanted.add(f"d3dcompiler_{version[1]}.dll")
+        if key.startswith("d3dx9_"):
+            wanted.add(LEGACY_COMPILER)
+    # What it's given for this may be there without anything importing it.
+    return wanted - found
 
 
 def libraries_to_install(mod: Standalone) -> set[str]:
@@ -481,8 +603,12 @@ def add_library_file(mod: Standalone, file: Path) -> list[str]:
 def redist_cabs(names: set[str]) -> dict[str, list[Path]]:
     """The installers' .cab files of those libraries the user's Steam folders have."""
     cabs = [cab for folder in redist_folders() for cab in folder.glob("*.cab")]
-    found = {name: [cab for cab in cabs if re.search(rf"_{re.escape(Path(name).stem)}_x(64|86)\.cab$", cab.name, re.I)]
-             for name in names}
+
+    def named(stem: str) -> list[Path]:
+        return [cab for cab in cabs if re.search(rf"_{re.escape(stem)}_x(64|86)\.cab$", cab.name, re.I)]
+
+    # Before August 2009 a compiler came in the installer of the d3dx10 of its version.
+    found = {name: named(Path(name).stem) or named(Path(name).stem.replace("d3dcompiler_", "d3dx10_")) for name in names}
     return {name: files for name, files in found.items() if files}
 
 
@@ -529,7 +655,7 @@ def _game_data(folder: Path) -> str | None:
         return None
     if archives:
         return f"{len(archives)} archive{'s' if len(archives) != 1 else ''} in the mod's folder"
-    for name in ("db", "resources", "gamedata"):
+    for name in ("db", "database", "resources", "gamedata"):
         try:
             if any((folder / name).iterdir()):
                 return f"The {name} folder"

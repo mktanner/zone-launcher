@@ -9,6 +9,7 @@ import hashlib
 import re
 import shlex
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -61,8 +62,8 @@ class Pending:
     before: dict[str, tuple[int, float]] = field(default_factory=dict)
     # Sizes seen on the last poll, to tell when a file of unknown size has stopped growing.
     sizes: dict[str, int] = field(default_factory=dict)
-    # A standalone mod: the folder to unpack it in, rather than installing it as a game's mod.
-    destination: Path | None = None
+    # A standalone mod: unpacks its archive and returns its folder, rather than installing it as a game's mod.
+    unpack: Callable[[Path], Path] | None = None
 
     def __post_init__(self):
         if not self.before:

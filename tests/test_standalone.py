@@ -352,6 +352,115 @@ class StandaloneTests(unittest.TestCase):
         write_program(self.folder / "bin" / "D3DCompiler_43.dll")
         self.assertEqual(standalone.wanted_libraries(mod), set())
 
+    def test_a_programs_renderers_count_though_it_loads_them_later(self):
+        folder = self.tmp / "coc"
+        write_program(folder / "bin" / "xrEngine.exe", imports=["kernel32.dll"])
+        write_program(folder / "bin" / "xrRender_R4.dll", imports=["d3dx11_43.dll"])
+        self.assertEqual(standalone.wanted_libraries(standalone.load(folder, "bin/xrEngine.exe")),
+                         {"d3dx11_43.dll", "d3dcompiler_43.dll"})
+
+    def test_d3dx9_wants_the_old_compiler_it_hands_old_shaders_to(self):
+        folder = self.tmp / "coc"
+        write_program(folder / "bin" / "xrEngine.exe", imports=["d3dx9_43.dll"])
+        mod = standalone.load(folder, "bin/xrEngine.exe")
+        self.assertEqual(standalone.wanted_libraries(mod), {"d3dx9_43.dll", "d3dcompiler_43.dll", "d3dx9_31.dll"})
+        # A mod that brings it needs nothing from Steam for it.
+        write_program(folder / "bin" / "d3dx9_31.dll")
+        self.assertNotIn("d3dx9_31.dll", standalone.wanted_libraries(mod))
+
+    def test_app_data_relative_to_the_game_folder(self):
+        (self.folder / "fsgame.ltx").write_text("$app_data_root$ \t\t= true| false| appdata\\\n")
+        self.assertEqual(standalone.load(self.folder).app_data, self.folder / "appdata")
+
+    def test_database_folder_is_game_data(self):
+        folder = self.tmp / "coc"
+        touch(folder / "database" / "config" / "ai.db")
+        self.assertEqual(standalone._game_data(folder), "The database folder")
+
+    def windows_setup(self) -> tuple[Path, Path]:
+        game = self.tmp / "SSD" / "Clear Sky"
+        write_program(game / "bin" / "xrEngine.exe")
+        touch(game / "resources" / "resources.db0")
+        touch(game / "goggame-1.info")
+        touch(game / "fsgame.ltx")
+        fsgame = self.tmp / "fsgame.ltx"
+        fsgame.write_text("$app_data_root$ = true| false| $fs_root$| _appdata_\\\n")
+        return game, fsgame
+
+    def test_windows_version_links_the_game_and_leaves_it_alone(self):
+        game, fsgame = self.windows_setup()
+        before = sorted(p.name for p in game.iterdir())
+        folder = standalone.link_windows_version("cs", game, fsgame)
+        self.assertTrue((folder / "resources").is_symlink())
+        self.assertFalse((folder / "fsgame.ltx").is_symlink())
+        self.assertEqual((folder / "fsgame.ltx").read_text(), fsgame.read_text())
+        self.assertEqual(sorted(p.name for p in game.iterdir()), before)
+        mod = standalone.load(folder)
+        self.assertEqual(mod.exe, "bin/xrEngine.exe")
+        self.assertEqual(mod.name, "Clear Sky (Windows)")
+        self.assertEqual(standalone.windows_game(mod), "cs")
+        self.assertEqual(mod.app_data, folder / "_appdata_")
+        self.assertIsNone(standalone.windows_game(standalone.load(self.folder)))
+
+    def test_a_language_pack_kept_elsewhere_is_linked_in(self):
+        game, fsgame = self.windows_setup()
+        touch(game / "localization" / "xefis_movies.db")
+        pack = self.tmp / "gog-support" / "add" / "xenglish.db"
+        touch(pack)
+        folder = standalone.link_windows_version("cs", game, fsgame, [pack])
+        self.assertFalse((folder / "localization").is_symlink())
+        self.assertEqual(sorted(p.name for p in (folder / "localization").iterdir()), ["xefis_movies.db", "xenglish.db"])
+        self.assertEqual(sorted(p.name for p in (game / "localization").iterdir()), ["xefis_movies.db"])
+        # Changing language swaps the pack.
+        other = self.tmp / "gog-support" / "add" / "xpolish.db"
+        touch(other)
+        folder = standalone.link_windows_version("cs", game, fsgame, [other])
+        self.assertEqual(sorted(p.name for p in (folder / "localization").iterdir()), ["xefis_movies.db", "xpolish.db"])
+
+    def test_a_language_pack_kept_elsewhere_is_copied(self):
+        game, _fsgame = self.windows_setup()
+        pack = self.tmp / "gog-support" / "add" / "xenglish.db"
+        touch(pack)
+        target = self.tmp / "mod"
+        self.assertIn("localization/xenglish.db", [rel for rel, _ in standalone.missing_files(game, target, [pack])])
+        standalone.copy_missing(game, target, [pack])
+        self.assertTrue((target / "localization" / "xenglish.db").is_file())
+        self.assertEqual(standalone.missing_files(game, target, [pack]), [])
+
+    def test_a_games_dedicated_server_is_not_its_launcher(self):
+        game, fsgame = self.windows_setup()
+        write_program(game / "bin" / "dedicated" / "xrEngine.exe")
+        folder = standalone.link_windows_version("cs", game, fsgame)
+        self.assertEqual(standalone.find_launchers(folder), ["bin/xrEngine.exe"])
+
+    def test_windows_version_follows_the_game_to_another_folder(self):
+        game, fsgame = self.windows_setup()
+        folder = standalone.link_windows_version("cs", game, fsgame)
+        touch(folder / "_appdata_" / "savedgames" / "a.scop")
+        other = self.tmp / "Other" / "Clear Sky"
+        other.parent.mkdir()
+        game.rename(other)
+        folder = standalone.link_windows_version("cs", other, fsgame)
+        self.assertEqual(Path(os.readlink(folder / "bin")), other / "bin")
+        self.assertTrue((folder / "_appdata_" / "savedgames" / "a.scop").is_file())
+
+    def test_missing_files_are_copied_without_overwriting(self):
+        game, _fsgame = self.windows_setup()
+        (game / "readme.txt").write_text("the game's")
+        target = self.tmp / "mod"
+        touch(target / "gamedata" / "a.ltx")
+        (target / "readme.txt").parent.mkdir(exist_ok=True)
+        (target / "readme.txt").write_text("the mod's")
+        missing = [rel for rel, _size in standalone.missing_files(game, target)]
+        self.assertEqual(sorted(missing), ["bin/xrEngine.exe", "resources/resources.db0"])
+        self.assertEqual(standalone.copy_missing(game, target), 2)
+        self.assertEqual((target / "readme.txt").read_text(), "the mod's")
+        self.assertTrue((target / "resources" / "resources.db0").is_file())
+        # The store's files and the game's file list aren't the mod's business.
+        self.assertFalse((target / "goggame-1.info").exists())
+        self.assertFalse((target / "fsgame.ltx").exists())
+        self.assertEqual(standalone.missing_files(game, target), [])
+
     def test_missing_directx_libraries_are_reported(self):
         mod = self.directx_mod()
         with mock.patch.object(standalone, "runner_problem", lambda r: None), \
@@ -395,18 +504,27 @@ class StandaloneTests(unittest.TestCase):
             standalone.prepare(mod)
         popen.assert_not_called()
 
+    def test_older_compilers_come_with_d3dx10(self):
+        self.redist("Mar2008_d3dx9_37_x86.cab", "Mar2008_d3dx10_37_x86.cab", "Jun2010_D3DCompiler_43_x86.cab",
+                    "Jun2010_d3dx10_43_x86.cab")
+        found = standalone.redist_cabs({"d3dcompiler_37.dll", "d3dcompiler_43.dll", "d3dcompiler_36.dll"})
+        self.assertEqual([cab.name for cab in found["d3dcompiler_37.dll"]], ["Mar2008_d3dx10_37_x86.cab"])
+        # One with its own installer doesn't bring in d3dx10's as well.
+        self.assertEqual([cab.name for cab in found["d3dcompiler_43.dll"]], ["Jun2010_D3DCompiler_43_x86.cab"])
+        self.assertNotIn("d3dcompiler_36.dll", found)
+
     def test_install_libraries_from_steam(self):
         mod = self.directx_mod()
-        self.assertEqual(standalone.libraries_to_install(mod), {"d3dcompiler_43.dll", "d3dx9_43.dll"})
+        self.assertEqual(standalone.libraries_to_install(mod), {"d3dcompiler_43.dll", "d3dx9_43.dll", "d3dx9_31.dll"})
         self.redist("Jun2010_D3DCompiler_43_x64.cab", "Jun2010_D3DCompiler_43_x86.cab", "Jun2010_d3dx10_43_x64.cab")
         with mock.patch.object(standalone.mods, "extract", self.fake_extract):
             installed, absent = standalone.install_libraries(mod)
-        self.assertEqual((installed, absent), (["d3dcompiler_43.dll"], ["d3dx9_43.dll"]))
+        self.assertEqual((installed, absent), (["d3dcompiler_43.dll"], ["d3dx9_31.dll", "d3dx9_43.dll"]))
         self.assertTrue((mod.libraries_dir / "64" / "d3dcompiler_43.dll").is_file())
         self.assertTrue((mod.libraries_dir / "32" / "d3dcompiler_43.dll").is_file())
         self.assertFalse((mod.libraries_dir / "64" / "d3dx10_43.dll").exists())
         self.assertIn("d3dcompiler_43=n,b", standalone.wine_environment(mod)["WINEDLLOVERRIDES"].split(";"))
-        self.assertEqual(standalone.libraries_to_install(mod), {"d3dx9_43.dll"})
+        self.assertEqual(standalone.libraries_to_install(mod), {"d3dx9_43.dll", "d3dx9_31.dll"})
 
     def test_add_a_library_by_hand(self):
         mod = self.directx_mod()
