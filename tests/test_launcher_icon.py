@@ -24,6 +24,27 @@ Icon=/home/u/.local/share/zone-launcher/icons/openxray_cs.png
 """
 
 
+class RecolourTests(unittest.TestCase):
+    # Two pixels and a byte of row padding: bright yellow, half see-through, then opaque black.
+    PIXELS = bytes([255, 255, 0, 128, 0, 0, 0, 255, 99])
+
+    def test_white_keeps_the_bright_parts(self):
+        out = launcher_icon.one_colour(self.PIXELS, 2, 1, 9, white=True)
+        self.assertEqual(out[:8], bytes([255, 255, 255, 128, 255, 255, 255, 0]))
+
+    def test_black_keeps_the_dark_parts(self):
+        out = launcher_icon.one_colour(self.PIXELS, 2, 1, 9, white=False)
+        self.assertEqual(out[:8], bytes([0, 0, 0, 0, 0, 0, 0, 255]))
+
+    def test_grey_keeps_transparency(self):
+        out = launcher_icon.greyscale(self.PIXELS, 2, 1, 9)
+        self.assertEqual(out[:8], bytes([225, 225, 225, 128, 0, 0, 0, 255]))
+
+    def test_row_padding_is_left_alone(self):
+        self.assertEqual(launcher_icon.one_colour(self.PIXELS, 2, 1, 9, white=True)[8], 99)
+        self.assertEqual(launcher_icon.greyscale(self.PIXELS, 2, 1, 9)[8], 99)
+
+
 class LauncherIconTests(unittest.TestCase):
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()

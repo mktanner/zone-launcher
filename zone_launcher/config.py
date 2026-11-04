@@ -43,8 +43,19 @@ class Config:
     style: str = "system"
     # "default" (the launcher's own) or a game key: the icon in the app menu, taskbar and dock.
     icon: str = "default"
-    # Show that icon in grey.
-    monochrome_icon: bool = False
+    # A key of appearance.ICON_COLOURS: how to show that icon.
+    icon_colour: str = "colour"
+    # Clicking a game's or standalone mod's card plays it, instead of opening its Details or Manage.
+    card_click_plays: bool = False
+    # A game's own language, resolution, window_mode and extra_args. What it hasn't set comes from the fields above.
+    game_settings: dict[str, dict[str, str]] = field(default_factory=dict)
+
+    def game_setting(self, game: str, name: str) -> str:
+        return self.game_settings.get(game, {}).get(name, getattr(self, name))
+
+    def set_game_setting(self, game: str, name: str, value: str) -> None:
+        self.game_settings.setdefault(game, {})[name] = value
+        self.save()
 
     @classmethod
     def load(cls) -> "Config":
@@ -52,6 +63,9 @@ class Config:
             data = json.loads(config_path().read_text())
         except (OSError, ValueError):
             return cls()
+        # Older versions only had a switch for grey.
+        if data.get("monochrome_icon"):
+            data.setdefault("icon_colour", "monochrome")
         known = cls.__dataclass_fields__
         return cls(**{k: v for k, v in data.items() if k in known})
 

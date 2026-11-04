@@ -48,6 +48,9 @@ yourself, see [Building](#building).
     Heroic downloads it but never copies it, so starting a new game crashes with
     `There is no sound collection with path 'characters_voice\scenario\...'`. The launcher copies
     the pack in from Heroic's GOG support folder, or from the game's own `languages/` folder.
+    Clear Sky's Details can also run **GOG's setup**, the step Heroic skips, with Proton or Wine. It
+    puts the pack in the game's own folder. Its change to `fsgame.ltx` is undone, since it names a
+    path inside its Wine prefix. Shadow of Chernobyl and Call of Pripyat have no such program.
   - **`fsgame.ltx`** missing or wrong for the game: installs OpenXRay's version, or for Shadow of
     Chernobyl one with its `config\` layout (OpenXRay only ships the Clear Sky/Call of Pripyat
     layout; GOG's installer normally writes Shadow of Chernobyl's). Keeps any old one as
@@ -56,18 +59,18 @@ yourself, see [Building](#building).
     Windows installer would have installed.
   - **OpenGL shaders** not linked, or linked to a different engine install (such as a system
     `/usr/share/openxray` seen from inside the Flatpak): re-links `gamedata/shaders/gl`.
-- **Language**: one setting for all games, applied on the next Play to every game that has it.
+- **Language**: set for each game in its Details (click its card), applied on the next Play.
   Clear Sky switches between its full language packs (voices and text), Shadow of Chernobyl between
   the text languages in its archives; Call of Pripyat only ships English from GOG. A pack that's
   switched away from is unlinked, or set aside in `localization/.inactive/` if it's a real file.
-  Details lists each game's languages.
-- **Resolution and display mode**: fullscreen at your monitor's native resolution by default,
+- **Resolution and display mode**: set for each game in its Details. Fullscreen at your monitor's native resolution by default,
   or borderless/windowed at any common size. Written into the game's `_appdata_/user.ltx` before
   each launch; pick "Use in-game setting" to manage it from the game's own options instead. In the
   game, **Alt+Enter** or **F11** switches between fullscreen and a window, and a window can be
   resized, maximized or tiled freely: the game follows its size.
 - **One window, no scrolling**: the three games side by side, each with its status, Mods,
-  Details (install, checks and fixes, log) and Play; settings in a bar along the bottom.
+  Details (install, settings, checks and fixes, log) and Play. Clicking a card opens its Details,
+  or its Manage for a standalone mod; **Click a card to play** in Options makes it start the game.
 - **Standalone mods**: mods that are complete games in one folder, with their own Windows engine
   (such as STALKER Complete 1.5 or Anomaly), run with Wine or Proton rather than OpenXRay. Add
   the mod's folder with **+** under "Standalone mods" and press Play. The folder stays where it is
@@ -85,6 +88,10 @@ yourself, see [Building](#building).
   **Windows versions of the games** in Options also lists your games under Standalone mods, to run
   their original Windows programs with Proton or Wine. They run from a folder of links, with their
   own saves, so your game folders aren't changed.
+  Options also has **Download** for **Proton** (the latest CachyOS Proton from GitHub, to the
+  launcher's own folder) and, without Steam's copy, **Microsoft's DirectX libraries** (from
+  Microsoft). Both are checked against their checksums. Wine itself comes from your distribution.
+  Each mod shows its own icon: its `icon.png`, or else its program's.
   **Manage** on a mod chooses which program starts it (popular engines are picked automatically,
   and any `.exe` in the folder can be chosen by hand), checks that it has what it needs (by reading
   which libraries the program loads and asking Wine which it provides, so mods don't need listing
@@ -103,11 +110,12 @@ yourself, see [Building](#building).
   installed, without overwriting anything. The Flatpak needs
   permission to start programs outside its sandbox to reach Wine and Proton, so it isn't strictly
   sandboxed.
-- **Options** (the gear next to "Add a game folder"): a light, dark or system style, and the icon
+- **Options** (the gear next to "Add a game folder"): a theme (your system's, light, dark, or one of
+  eight more such as The Zone, Clear Sky and Pripyat), and the icon
   the launcher shows in the app menu, taskbar and dock: its own or any of the three games', in
-  colour or monochrome. It's set by putting an icon of the launcher's name in `~/.local/share/icons`,
+  full colour, monochrome, black or white. It's set by putting an icon of the launcher's name in `~/.local/share/icons`,
   which desktops use before the installed one (and, for an AppImage that a tool like Gear Lever
-  added to the menu, in that tool's entry); choosing the launcher's own icon in colour undoes it.
+  added to the menu, in that tool's entry); choosing the launcher's own icon in full colour undoes it.
 - **Shows why a game crashed**: after a crash it pulls the error out of the OpenXRay log.
 - **Mods**: browse ModDB for each game's mods and addons, download in your browser and have the
   launcher install the file when it lands; or install zip/7z/rar archives and unpacked folders

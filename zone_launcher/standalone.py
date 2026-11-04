@@ -18,7 +18,7 @@ from dataclasses import dataclass
 from functools import cached_property
 from pathlib import Path
 
-from . import detect, mods, pe
+from . import detect, mods, pe, runtimes
 from .engine import engine_environment
 from .games import GAMES
 
@@ -60,7 +60,7 @@ UNPACK_FACTOR = 2.5
 # How long a new prefix can take to set up, in seconds.
 PREFIX_TIMEOUT = 300
 # Wine builds of other launchers, under the home folder. Proton is found in Steam's folders too.
-RUNNER_FOLDERS = (".local/share/lutris/runners/wine", ".var/app/net.lutris.Lutris/data/lutris/runners/wine",
+RUNNER_FOLDERS = (runtimes.PROTON_FOLDER, ".local/share/lutris/runners/wine", ".var/app/net.lutris.Lutris/data/lutris/runners/wine",
                   ".config/heroic/tools/proton", ".config/heroic/tools/wine",
                   ".var/app/com.heroicgameslauncher.hgl/config/heroic/tools/proton",
                   ".var/app/com.heroicgameslauncher.hgl/config/heroic/tools/wine",
@@ -167,7 +167,17 @@ class Standalone:
 
     @property
     def icon(self) -> Path | None:
-        return next((self.path / name for name in ICONS if (self.path / name).is_file()), None)
+        """The icon the mod has, or else the one of its programs, kept so they aren't read every time."""
+        if found := next((self.path / name for name in ICONS if (self.path / name).is_file()), None):
+            return found
+        kept = self.data_dir / "icon.png"
+        try:
+            if not kept.exists():
+                kept.parent.mkdir(parents=True, exist_ok=True)
+                kept.write_bytes(program_icon(self) or b"")
+            return kept if kept.stat().st_size else None
+        except OSError:
+            return None
 
     @property
     def app_data(self) -> Path:
@@ -177,6 +187,15 @@ class Standalone:
     def latest_log(self) -> Path | None:
         logs = sorted((self.app_data / "logs").glob("*.log"), key=lambda p: p.stat().st_mtime)
         return logs[-1] if logs else None
+
+
+def program_icon(mod: Standalone) -> bytes | None:
+    """The icon of a mod's own launcher, in its top folder, or else of the program that starts it."""
+    programs = sorted(find_launchers(mod.path), key=lambda rel: "/" in rel)
+    for rel in dict.fromkeys(programs[:1] + [mod.exe] * bool(mod.exe) + programs):
+        if image := pe.icon(mod.path / rel):
+            return image
+    return None
 
 
 @dataclass(frozen=True)
@@ -461,8 +480,8 @@ def wine_version() -> str | None:
 def runner_problem(runner: Runner) -> str | None:
     """Why a runner can't start anything, in words."""
     if runner.path is None:
-        return None if wine_version() else ("Neither Proton nor the system's Wine was found. Install Proton "
-                                            "Experimental with Steam, or Wine with 32-bit support.")
+        return None if wine_version() else ("Neither Proton nor the system's Wine was found. Get Proton in Options, "
+                                            "or install Wine with 32-bit support.")
     if not is_runner(runner.path):
         return f"{runner.name} isn't there any more. Choose another."
     if runner.is_proton and not host_has("python3"):
@@ -575,6 +594,7 @@ def redist_folders() -> list[Path]:
             common = library / "steamapps" / "common"
             folders += common.glob(f"Steamworks Shared/{DIRECTX_REDIST}/*")
             folders += common.glob(f"*/{DIRECTX_REDIST}/*")
+    folders.append(home / runtimes.DIRECTX_FOLDER)
     return list({folder.resolve(): folder for folder in folders if folder.is_dir()}.values())
 
 
@@ -698,7 +718,7 @@ def check(mod: Standalone) -> list[Check]:
         checks.append(Check("DirectX libraries", False,
                             f"{', '.join(sorted(unavailable))} from Microsoft aren't installed for this mod, and "
                             "Steam's DirectX installer wasn't found. Wine's and Proton's own can't compile every "
-                            "game's shaders.") if unavailable else
+                            "game's shaders. Manage can download them.") if unavailable else
                       Check("DirectX libraries", True, f"Microsoft's {', '.join(sorted(absent))} will be installed "
                             "from Steam's DirectX installer when you press Play."))
     return checks
@@ -750,10 +770,10 @@ def wine_environment(mod: Standalone) -> dict[str, str]:
         return env
 
 
-def _spawn(mod: Standalone, argv: list[str], output=subprocess.DEVNULL) -> subprocess.Popen:
+def _spawn(mod: Standalone, argv: list[str], output=subprocess.DEVNULL, cwd: Path | None = None) -> subprocess.Popen:
     # The engine finds fsgame.ltx in the working directory.
-    env = wine_environment(mod)
-    return subprocess.Popen(host_command(argv, mod.path, env), cwd=mod.path, stdin=subprocess.DEVNULL, stdout=output,
+    env, cwd = wine_environment(mod), cwd or mod.path
+    return subprocess.Popen(host_command(argv, cwd, env), cwd=cwd, stdin=subprocess.DEVNULL, stdout=output,
                             stderr=subprocess.STDOUT, env={**engine_environment(), **env})
 
 
@@ -796,6 +816,12 @@ def launch(mod: Standalone) -> subprocess.Popen:
         arguments = []
     with open(mod.wine_log, "wb") as log:
         return _spawn(mod, mod.runner.command(program, *arguments), log)
+
+
+def run_program(mod: Standalone, program: Path, arguments: list[str]) -> subprocess.Popen:
+    """Runs another program in the mod's prefix, from its own folder."""
+    _make_prefix_folder(mod)
+    return _spawn(mod, mod.runner.command(str(program), *arguments), cwd=program.parent)
 
 
 def configure(mod: Standalone) -> subprocess.Popen:

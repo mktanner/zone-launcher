@@ -427,6 +427,28 @@ class StandaloneTests(unittest.TestCase):
         self.assertTrue((target / "localization" / "xenglish.db").is_file())
         self.assertEqual(standalone.missing_files(game, target, [pack]), [])
 
+    def test_a_mods_icon_comes_from_its_launcher_and_is_kept(self):
+        write_program(self.folder / "bin" / "xrEngine.exe")
+        write_program(self.folder / "Stalker-CoC.exe")
+        mod = standalone.load(self.folder)
+        with mock.patch.object(standalone.pe, "icon", side_effect=lambda p: b"png" if p.name == "Stalker-CoC.exe" else None) as icon:
+            self.assertEqual(mod.icon.read_bytes(), b"png")
+            self.assertEqual(mod.icon, mod.data_dir / "icon.png")
+            self.assertEqual(icon.call_count, 1)
+
+    def test_a_mods_own_picture_comes_first(self):
+        touch(self.folder / "Linux" / "icon.png")
+        self.assertEqual(standalone.load(self.folder).icon, self.folder / "Linux" / "icon.png")
+
+    def test_a_mod_with_no_icon_is_only_looked_at_once(self):
+        write_program(self.folder / "bin" / "xrEngine.exe")
+        mod = standalone.load(self.folder)
+        with mock.patch.object(standalone.pe, "icon", return_value=None) as icon:
+            self.assertIsNone(mod.icon)
+            calls = icon.call_count
+            self.assertIsNone(mod.icon)
+            self.assertEqual(icon.call_count, calls)
+
     def test_a_games_dedicated_server_is_not_its_launcher(self):
         game, fsgame = self.windows_setup()
         write_program(game / "bin" / "dedicated" / "xrEngine.exe")

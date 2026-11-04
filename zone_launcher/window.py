@@ -14,22 +14,21 @@ gi.require_version("Adw", "1")
 gi.require_version("Pango", "1.0")
 from gi.repository import Adw, Gdk, Gio, GLib, Gtk, Pango  # noqa: E402
 
-from . import appearance, detect, display, engine, fixes, mods, setup, standalone  # noqa: E402
+from . import appearance, detect, display, engine, fixes, gog, mods, setup, standalone  # noqa: E402
 from .files_ui import FilesDialog  # noqa: E402
 from .moddb_ui import Downloads  # noqa: E402
+from .runtimes_ui import DIRECTX, PROTON, Getter, GetRow  # noqa: E402
 from .mods_ui import ModsDialog  # noqa: E402
 from .standalone_ui import GetModsDialog, ManageDialog  # noqa: E402
 from .config import Config  # noqa: E402
 from .games import GAMES  # noqa: E402
 
-# Every language at least one game has (Clear Sky packs, Shadow of Chernobyl text); each game switches
-# to it if it can and says so in Details if not.
-LANGUAGES = ["english", "russian", "german", "french", "italian", "spanish", "polish", "czech"]
 # What to look for in a game's folder, for when it has to be picked by hand.
 FOLDER_HINT = {"soc": "gamedata.db0 and a bin folder",
                "cs": "a resources folder with resources.db0 (and patches/xpatch_10.db)",
                "cop": "Stalker-COP.exe, or a resources folder with resources.db3"}
 STANDALONE_ROW_HEIGHT = 55
+GOG_SETUP_STATUS = "Running GOG's setup…"
 WHERE_WE_LOOK = ("OpenXRay's folder, Heroic, Steam, Lutris, ~/Games, Wine and Bottles prefixes, and "
                  "other drives")
 
@@ -54,11 +53,14 @@ class LauncherWindow(Adw.ApplicationWindow):
                          default_height=600 + STANDALONE_ROW_HEIGHT * min(
                              len(self.config.standalone_mods) + 3 * self.config.windows_versions, 5))
         appearance.apply_style(self.config.style)
-        appearance.ensure_icon(self.config.icon, self.config.monochrome_icon)
+        appearance.ensure_icon(self.config.icon, self.config.icon_colour)
         css = Gtk.CssProvider()
-        css.load_from_string(".monochrome { filter: grayscale(1); }\n"
+        css.load_from_string(".icon-on-light { background: #ebebeb; border-radius: 10px; }\n"
+                             ".icon-on-dark { background: #282828; border-radius: 10px; }\n"
                              ".tag { font-size: smaller; padding: 1px 8px; border-radius: 99px; "
-                             "background: alpha(currentColor, 0.12); }")
+                             "background: alpha(currentColor, 0.12); }\n"
+                             ".game-card:hover { background-image: linear-gradient(alpha(currentColor, 0.04), "
+                             "alpha(currentColor, 0.04)); }")
         Gtk.StyleContext.add_provider_for_display(Gdk.Display.get_default(), css,
                                                   Gtk.STYLE_PROVIDER_PRIORITY_APPLICATION)
         self.engine = engine.find_engine(self.config.engine_override or None)
@@ -78,6 +80,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.downloads = Downloads()
         self.downloads.listen(self.on_download)
         self.downloads.on_standalone = self.add_standalone
+        self.getter = Getter(self)
         self.mods_dialog: ModsDialog | None = None
         self.get_mods_dialog: GetModsDialog | None = None
 
@@ -95,7 +98,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         header.pack_end(self.refresh_btn)
         view.add_top_bar(header)
 
-        self.banner = Adw.Banner(title="OpenXRay engine not found. Install it, or set its path below.")
+        self.banner = Adw.Banner(title="OpenXRay engine not found. Install it to play these games.")
         view.add_top_bar(self.banner)
 
         # vexpand set explicitly, so the cards' inner spacer doesn't stretch the whole row.
@@ -105,7 +108,6 @@ class LauncherWindow(Adw.ApplicationWindow):
         body.append(self.cards)
         self.standalone_holder = Gtk.Box(orientation=Gtk.Orientation.VERTICAL)
         body.append(self.standalone_holder)
-        body.append(self.build_settings_bar())
         # Keep a maximized window tidy: centered, no wider than this. Scrolls only if made very small.
         clamp = Adw.Clamp(child=body, maximum_size=1280, tightening_threshold=1100)
         view.set_content(Gtk.ScrolledWindow(child=clamp, hscrollbar_policy=Gtk.PolicyType.NEVER))
@@ -119,7 +121,6 @@ class LauncherWindow(Adw.ApplicationWindow):
     def refresh(self):
         self.engine = engine.find_engine(self.config.engine_override or None)
         self.banner.set_revealed(self.engine is None)
-        self.engine_label.set_label(str(self.engine.binary) if self.engine else "Not found")
         # A standalone mod can look like Shadow of Chernobyl (gamedata.db0, bin/XR_3DA.exe).
         added = {Path(p).resolve() for p in self.config.standalone_mods}
         self.installs = [i for i in detect.find_installs(extra=self.config.extra_folders,
@@ -160,7 +161,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         if setup_issue:
             state.issues = [setup_issue]
         else:
-            state.issues = fixes.check(state.run, self.engine, self.config.language) if self.engine else []
+            state.issues = fixes.check(state.run, self.engine, self.config.game_setting(key, "language")) if self.engine else []
         pending = [i for i in state.issues if i.blocking]
         stuck = [i for i in pending if not i.fix]
         if key in self.running:
@@ -181,7 +182,12 @@ class LauncherWindow(Adw.ApplicationWindow):
     def build_game_card(self, key: str) -> Gtk.Widget:
         game = GAMES[key]
         state = self.game_state(key)
-        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["card"])
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["card", "game-card"])
+        card.set_cursor_from_name("pointer")
+        # The card's buttons keep their own clicks.
+        click = Gtk.GestureClick()
+        click.connect("released", lambda *_: self.on_card_clicked(key))
+        card.add_controller(click)
         inner = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10,
                         margin_top=18, margin_bottom=18, margin_start=18, margin_end=18)
         card.append(inner)
@@ -244,6 +250,12 @@ class LauncherWindow(Adw.ApplicationWindow):
         inner.append(play)
         return card
 
+    def on_card_clicked(self, key: str):
+        if self.config.card_click_plays and self.game_state(key).can_play and key not in self.running:
+            self.on_play(None, key)
+        else:
+            self.show_details(key)
+
     def build_standalone_group(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup(title="Standalone mods")
         waiting = self.downloads.waiting(standalone.GAME)
@@ -280,7 +292,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         """The language pack a game's files go with: a store may keep it outside the game's folder."""
         install = self.selected_install(game)
         packs = fixes.available_language_packs(install) if install else {}
-        return packs.get(self.config.language) or packs.get("english") or next(iter(packs.values()), [])
+        return packs.get(self.config.game_setting(game, "language")) or packs.get("english") or next(iter(packs.values()), [])
 
     def windows_fsgame(self, game: str) -> Path | None:
         """The file list a game's files need outside their store's folder, with saves beside them."""
@@ -310,7 +322,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         ready = bool(mod.exe) and (mod.path / mod.exe).is_file()
         subtitle = f"{mod.exe} · {mod.path}" if ready else f"Needs attention: {mod.path}"
         row = Adw.ActionRow(title=GLib.markup_escape_text(mod.name), subtitle=GLib.markup_escape_text(subtitle),
-                            subtitle_lines=1)
+                            subtitle_lines=1, activatable=not running)
+        if not running:
+            row.set_cursor_from_name("pointer")
+        row.connect("activated", lambda *_: self.on_standalone_clicked(mod, ready))
         row.add_prefix(self.standalone_icon(mod))
         runner = mod.runner
         row.add_suffix(Gtk.Label(label="Proton" if runner.is_proton else "Wine", css_classes=["tag"],
@@ -324,6 +339,12 @@ class LauncherWindow(Adw.ApplicationWindow):
         play.connect("clicked", lambda *_: self.stop_standalone(mod) if running else self.play_standalone(mod))
         row.add_suffix(play)
         return row
+
+    def on_standalone_clicked(self, mod: standalone.Standalone, ready: bool):
+        if self.config.card_click_plays and ready:
+            self.play_standalone(mod)
+        else:
+            ManageDialog(self, mod).present(self)
 
     def standalone_icon(self, mod: standalone.Standalone) -> Gtk.Image:
         if game := standalone.windows_game(mod):
@@ -362,7 +383,12 @@ class LauncherWindow(Adw.ApplicationWindow):
         state = self.game_state(key)
         page = Adw.PreferencesPage()
         page.add(self.build_files_group(key, state))
+        engine_group = Adw.PreferencesGroup(title="Engine", description="Every game uses the same one.")
+        engine_group.add(Adw.ActionRow(title="OpenXRay", subtitle=str(self.engine.binary) if self.engine else "Not found",
+                                       subtitle_selectable=True, use_markup=False))
+        page.add(engine_group)
         if state.install is not None:
+            page.add(self.build_game_settings_group(key, state))
             checks = Adw.PreferencesGroup(title="Checks")
             page.add(checks)
             for issue in state.issues or []:
@@ -452,11 +478,84 @@ class LauncherWindow(Adw.ApplicationWindow):
             install, run, self.engine.share if self.engine else None).present(self))
         group.add(browse)
 
-        if state.run:
-            available = fixes.available_languages(state.run)
-            group.add(Adw.ActionRow(title="Languages", use_markup=False,
-                                    subtitle=", ".join(l.title() for l in available) or "None found"))
+        if gog.setup_program(install):
+            group.add(self.build_gog_setup_row(key, install))
         return group
+
+    def build_gog_setup_row(self, key: str, install: detect.Install) -> Adw.ActionRow:
+        done = gog.setup_done(install)
+        row = Adw.ActionRow(title="GOG's setup", use_markup=False,
+                            subtitle="Already run for this copy." if done else
+                            "Heroic hasn't run it for this copy. It's what GOG's installer does after downloading: it "
+                            "puts the language pack in the game's folder. It runs with Proton or Wine.")
+        busy = self.busy.get(key) == GOG_SETUP_STATUS
+        if busy:
+            row.add_suffix(Gtk.Spinner(spinning=True, valign=Gtk.Align.CENTER))
+        run = Gtk.Button(label="Run Again" if done else "Run", valign=Gtk.Align.CENTER,
+                         sensitive=not busy and key not in self.running and key not in self.busy)
+        run.connect("clicked", lambda *_: self.run_gog_setup(key, install))
+        row.add_suffix(run)
+        return row
+
+    def run_gog_setup(self, key: str, install: detect.Install):
+        self.busy[key] = GOG_SETUP_STATUS
+        self.refresh()
+
+        def run():
+            try:
+                gog.run_setup(install)
+                error = None
+            except OSError as e:
+                error = str(e)
+            GLib.idle_add(done, error)
+
+        def done(error):
+            self.busy.pop(key, None)
+            self.refresh()
+            self.toast(f"Couldn't run GOG's setup: {error}" if error else f"Ran GOG's setup for {GAMES[key].title}")
+
+        threading.Thread(target=run, daemon=True).start()
+
+    def build_game_settings_group(self, key: str, state: GameState) -> Adw.PreferencesGroup:
+        group = Adw.PreferencesGroup(title="Settings", description="For this game. Used the next time you press Play.")
+        # (label, value) pairs; the first of each is the default.
+        modes = [(label, mode) for mode, (label, _) in display.WINDOW_MODES.items()]
+        modes.append(("Use in-game setting", display.KEEP))
+        native = self.native_resolution()
+        resolutions = [
+            (f"Native ({native[0]} × {native[1]})" if native else "Native", display.NATIVE),
+            *((f"{w} × {h}", f"{w}x{h}") for w, h in display.resolution_choices(native)),
+            ("Use in-game setting", display.KEEP),
+        ]
+        group.add(self.build_game_setting_row("Display", key, "window_mode", modes))
+        group.add(self.build_game_setting_row("Resolution", key, "resolution", resolutions))
+        if state.run:
+            current = self.config.game_setting(key, "language")
+            available = fixes.available_languages(state.run)
+            languages = [(language.title(), language) for language in
+                         (available if current in available else [*available, current])]
+            group.add(self.build_game_setting_row("Language", key, "language", languages, refresh=True))
+        args = Adw.EntryRow(title="Engine arguments", text=self.config.game_setting(key, "extra_args"),
+                            show_apply_button=True, use_markup=False)
+        args.connect("apply", self.on_args_applied, key)
+        args.connect("changed", lambda *_: args.remove_css_class("error"))
+        group.add(args)
+        return group
+
+    def build_game_setting_row(self, title: str, key: str, setting: str, options: list[tuple[str, str]],
+                               refresh: bool = False) -> Adw.ComboRow:
+        values = [value for _, value in options]
+        row = Adw.ComboRow(title=title, use_markup=False, model=Gtk.StringList.new([label for label, _ in options]))
+        current = self.config.game_setting(key, setting)
+        row.set_selected(values.index(current) if current in values else 0)
+
+        def chosen(row, _pspec):
+            self.config.set_game_setting(key, setting, values[row.get_selected()])
+            if refresh:
+                GLib.idle_add(self.refresh)
+
+        row.connect("notify::selected", chosen)
+        return row
 
     def build_issue_row(self, install: detect.Install, issue: fixes.Issue) -> Adw.ActionRow:
         row = Adw.ActionRow(title=issue.title, subtitle=issue.detail, use_markup=False)
@@ -467,59 +566,6 @@ class LauncherWindow(Adw.ApplicationWindow):
             row.add_suffix(btn)
         return row
 
-    def build_settings_bar(self) -> Gtk.Widget:
-        bar = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10, css_classes=["card"])
-        grid = Gtk.Grid(column_spacing=12, row_spacing=10, margin_top=14, margin_bottom=14,
-                        margin_start=18, margin_end=18)
-        bar.append(grid)
-
-        def field(label: str, widget: Gtk.Widget, column: int, row: int, width: int = 1):
-            grid.attach(Gtk.Label(label=label, xalign=1, css_classes=["dim-label"]), column, row, 1, 1)
-            grid.attach(widget, column + 1, row, width, 1)
-
-        # (label, config value) pairs; the first entry of each is the default.
-        modes = [(label, key) for key, (label, _) in display.WINDOW_MODES.items()]
-        modes.append(("Use in-game setting", display.KEEP))
-        native = self.native_resolution()
-        resolutions = [
-            (f"Native ({native[0]} × {native[1]})" if native else "Native", display.NATIVE),
-            *((f"{w} × {h}", f"{w}x{h}") for w, h in display.resolution_choices(native)),
-            ("Use in-game setting", display.KEEP),
-        ]
-        languages = [(lang.title(), lang) for lang in LANGUAGES]
-        field("Display", self.build_choice(modes, "window_mode"), 0, 0)
-        field("Resolution", self.build_choice(resolutions, "resolution"), 2, 0)
-        language = self.build_choice(languages, "language", refresh=True)
-        language.set_tooltip_text("Applied on the next Play to every game that has it; "
-                                  "Details shows each game's languages")
-        field("Language", language, 4, 0)
-
-        args = Gtk.Entry(text=self.config.extra_args, placeholder_text="none", hexpand=True)
-        args.connect("activate", self.on_args_applied)
-        focus = Gtk.EventControllerFocus()
-        focus.connect("leave", lambda *_: self.on_args_applied(args))
-        args.add_controller(focus)
-        field("Engine arguments", args, 0, 1, 3)
-        self.engine_label = Gtk.Label(xalign=0, ellipsize=Pango.EllipsizeMode.MIDDLE, selectable=True, hexpand=True)
-        field("Engine", self.engine_label, 4, 1)
-        return bar
-
-    def build_choice(self, options: list[tuple[str, str]], setting: str, refresh: bool = False) -> Gtk.DropDown:
-        values = [value for _, value in options]
-        choice = Gtk.DropDown.new_from_strings([label for label, _ in options])
-        current = getattr(self.config, setting)
-        choice.set_selected(values.index(current) if current in values else 0)
-        choice.set_hexpand(True)
-
-        def chosen(choice, _pspec):
-            setattr(self.config, setting, values[choice.get_selected()])
-            self.config.save()
-            if refresh:
-                GLib.idle_add(self.refresh)
-
-        choice.connect("notify::selected", chosen)
-        return choice
-
     def show_options(self):
         dialog = Adw.PreferencesDialog(title="Options", search_enabled=False)
         page = Adw.PreferencesPage()
@@ -528,7 +574,7 @@ class LauncherWindow(Adw.ApplicationWindow):
         look = Adw.PreferencesGroup(title="Appearance")
         page.add(look)
         styles = list(appearance.STYLES)
-        style = Adw.ComboRow(title="Style", model=Gtk.StringList.new([label for label, _ in appearance.STYLES.values()]),
+        style = Adw.ComboRow(title="Theme", model=Gtk.StringList.new([label for label, _ in appearance.STYLES.values()]),
                              selected=styles.index(self.config.style) if self.config.style in styles else 0)
 
         def style_chosen(row, _pspec):
@@ -538,6 +584,17 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         style.connect("notify::selected", style_chosen)
         look.add(style)
+        card_plays = Adw.SwitchRow(title="Click a card to play",
+                                   subtitle="Clicking a game or standalone mod starts it, instead of opening its "
+                                            "Details or Manage. Those buttons stay on the card.",
+                                   active=self.config.card_click_plays)
+
+        def card_plays_toggled(row, _pspec):
+            self.config.card_click_plays = row.get_active()
+            self.config.save()
+
+        card_plays.connect("notify::active", card_plays_toggled)
+        look.add(card_plays)
 
         icons = Adw.PreferencesGroup(title="Launcher icon",
                                      description="Shown in the app menu, taskbar and dock, pinned or not. A "
@@ -550,26 +607,32 @@ class LauncherWindow(Adw.ApplicationWindow):
             group = group or check
             row = Adw.ActionRow(title=label, activatable_widget=check)
             preview = Gtk.Image(icon_name=name, pixel_size=48)
-            previews.append(preview)
+            previews.append((preview, name))
             row.add_prefix(preview)
             row.add_suffix(check)
             check.connect("toggled", self.on_icon_chosen, value)
             icons.add(row)
-        mono = Adw.SwitchRow(title="Monochrome", subtitle="Show the icon in grey",
-                             active=self.config.monochrome_icon)
+        colours = list(appearance.ICON_COLOURS)
+        colour_row = Adw.ComboRow(title="Colour", subtitle="Black suits a light panel, and white a dark one.",
+                                  model=Gtk.StringList.new(list(appearance.ICON_COLOURS.values())),
+                                  selected=colours.index(self.config.icon_colour)
+                                  if self.config.icon_colour in colours else 0)
 
         def show_previews():
-            for preview in previews:
-                (preview.add_css_class if self.config.monochrome_icon else preview.remove_css_class)("monochrome")
+            colour = self.config.icon_colour
+            for preview, name in previews:
+                if png := appearance.render_icon(name, colour):
+                    preview.set_from_paintable(Gdk.Texture.new_from_bytes(GLib.Bytes.new(png)))
+                preview.set_css_classes({"black": ["icon-on-light"], "white": ["icon-on-dark"]}.get(colour, []))
 
-        def mono_toggled(row, _pspec):
-            self.config.monochrome_icon = row.get_active()
+        def colour_chosen(row, _pspec):
+            self.config.icon_colour = colours[row.get_selected()]
             self.config.save()
             show_previews()
             self.apply_icon()
 
-        mono.connect("notify::active", mono_toggled)
-        icons.add(mono)
+        colour_row.connect("notify::selected", colour_chosen)
+        icons.add(colour_row)
 
         mods_group = Adw.PreferencesGroup(title="Standalone mods")
         page.add(mods_group)
@@ -589,6 +652,8 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         windows.connect("notify::active", windows_toggled)
         mods_group.add(windows)
+        mods_group.add(GetRow(self, PROTON))
+        mods_group.add(GetRow(self, DIRECTX))
         show_previews()
         dialog.present(self)
 
@@ -601,7 +666,7 @@ class LauncherWindow(Adw.ApplicationWindow):
 
     def apply_icon(self):
         try:
-            problem = appearance.apply_icon(self.config.icon, self.config.monochrome_icon)
+            problem = appearance.apply_icon(self.config.icon, self.config.icon_colour)
         except OSError as e:
             problem = f"Couldn't change the launcher icon: {e.strerror}."
         if problem:
@@ -629,8 +694,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         geometry, scale = monitor.get_geometry(), monitor.get_scale()
         return round(geometry.width * scale), round(geometry.height * scale)
 
-    def display_resolution(self) -> tuple[int, int] | None:
-        value = self.config.resolution
+    def display_resolution(self, key: str) -> tuple[int, int] | None:
+        value = self.config.game_setting(key, "resolution")
         if value == display.NATIVE:
             return self.native_resolution()
         if value == display.KEEP:
@@ -638,18 +703,19 @@ class LauncherWindow(Adw.ApplicationWindow):
         w, _, h = value.partition("x")
         return (int(w), int(h)) if w.isdigit() and h.isdigit() else None
 
-    def on_args_applied(self, entry):
+    def on_args_applied(self, entry, key: str):
         text = entry.get_text().strip()
-        if text == self.config.extra_args:
+        if text == self.config.game_setting(key, "extra_args"):
             return
         try:
             shlex.split(text)
         except ValueError as e:
-            self.toast(f"Couldn't read those arguments: {e}")
+            entry.add_css_class("error")
+            entry.get_ancestor(Adw.PreferencesDialog).add_toast(
+                Adw.Toast(title=GLib.markup_escape_text(f"Couldn't read those arguments: {e}")))
             return
-        self.config.extra_args = text
-        self.config.save()
-        self.toast("Engine arguments saved")
+        self.config.set_game_setting(key, "extra_args", text)
+        entry.get_ancestor(Adw.PreferencesDialog).add_toast(Adw.Toast(title="Engine arguments saved"))
 
     def on_add_folder(self, _btn):
         self.choose_folder(None)
@@ -949,7 +1015,7 @@ class LauncherWindow(Adw.ApplicationWindow):
             except OSError as e:
                 self.toast(f"Couldn't update the game links: {e.strerror or e}")
                 return
-        pending = [i for i in fixes.check(run, self.engine, self.config.language) if i.blocking and i.fix]
+        pending = [i for i in fixes.check(run, self.engine, self.config.game_setting(key, "language")) if i.blocking and i.fix]
         if pending:
             self.apply_fixes(install, pending, then=lambda: self.start_game(run))
         else:
@@ -996,11 +1062,12 @@ class LauncherWindow(Adw.ApplicationWindow):
             dialog.present(self)
             return
         try:
-            display.apply(display.user_ltx(install), self.display_resolution(), self.config.window_mode)
+            display.apply(display.user_ltx(install), self.display_resolution(install.game),
+                          self.config.game_setting(install.game, "window_mode"))
         except OSError as e:
             self.toast(f"Couldn't set the resolution: {e.strerror or e}")
         try:
-            proc = engine.launch(self.engine, install, shlex.split(self.config.extra_args))
+            proc = engine.launch(self.engine, install, shlex.split(self.config.game_setting(install.game, "extra_args")))
         except OSError as e:
             self.toast(f"Couldn't start the engine: {e.strerror or e}")
             return

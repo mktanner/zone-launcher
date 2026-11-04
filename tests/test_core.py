@@ -3,8 +3,10 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 from zone_launcher import detect, engine, fixes
+from zone_launcher.config import Config
 from zone_launcher.detect import Install
 from zone_launcher.engine import Engine
 
@@ -173,6 +175,34 @@ class CrashSummaryTests(unittest.TestCase):
 
     def test_clean_log(self):
         self.assertIsNone(engine.crash_summary("* phase time: 1 ms\n* End of synchronization\n"))
+
+
+class IconColourTests(unittest.TestCase):
+    def load(self, saved: dict) -> Config:
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "config.json"
+            path.write_text(json.dumps(saved))
+            with mock.patch("zone_launcher.config.config_path", lambda: path):
+                return Config.load()
+
+    def test_the_old_monochrome_switch_carries_over(self):
+        self.assertEqual(self.load({"monochrome_icon": True}).icon_colour, "monochrome")
+        self.assertEqual(self.load({"monochrome_icon": False}).icon_colour, "colour")
+        self.assertEqual(self.load({}).icon_colour, "colour")
+
+    def test_a_chosen_colour_wins_over_the_old_switch(self):
+        self.assertEqual(self.load({"monochrome_icon": True, "icon_colour": "white"}).icon_colour, "white")
+
+
+class GameSettingsTests(unittest.TestCase):
+    def test_a_game_keeps_its_own_and_others_the_earlier_setting(self):
+        config = Config(language="polish", window_mode="windowed")
+        with mock.patch.object(Config, "save") as save:
+            config.set_game_setting("cs", "language", "english")
+        save.assert_called_once()
+        self.assertEqual(config.game_setting("cs", "language"), "english")
+        self.assertEqual(config.game_setting("soc", "language"), "polish")
+        self.assertEqual(config.game_setting("cs", "window_mode"), "windowed")
 
 
 if __name__ == "__main__":

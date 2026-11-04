@@ -15,6 +15,7 @@ from . import downloads, files, moddb, mods, standalone, suggestions  # noqa: E4
 from .files_ui import FilesDialog  # noqa: E402
 from .games import GAMES  # noqa: E402
 from .moddb_ui import Thumbnail, in_background, open_uri, pending_row  # noqa: E402
+from .runtimes_ui import DIRECTX, PROTON, GetRow  # noqa: E402
 
 
 class ManageDialog(Adw.PreferencesDialog):
@@ -137,6 +138,8 @@ class ManageDialog(Adw.PreferencesDialog):
         self.runner_row = Adw.ComboRow(title="Runs with", use_subtitle=True)
         group.add(self.runner_row)
         self.fill_runners()
+        if not standalone.best_runner().is_proton:
+            group.add(GetRow(self.window, PROTON))
 
         self.libraries_row = Adw.ActionRow(title="Microsoft's DirectX libraries", use_markup=False)
         self.libraries_spinner = Gtk.Spinner(visible=False, valign=Gtk.Align.CENTER)
@@ -151,6 +154,8 @@ class ManageDialog(Adw.PreferencesDialog):
             self.libraries_row.add_suffix(widget)
         group.add(self.libraries_row)
         self.fill_libraries()
+        if not standalone.redist_folders():
+            group.add(GetRow(self.window, DIRECTX))
 
         group.add(self.setting_row("Launch arguments", "arguments", "Passed to the program, such as -nointro",
                                    shlex.split))
@@ -247,7 +252,7 @@ class ManageDialog(Adw.PreferencesDialog):
         if wanted and off:
             subtitle = f"Turned off, so {', '.join(wanted)} come from Wine or Proton. They may not compile every shader."
         elif wanted and len(found) < len(wanted):
-            subtitle = f"This mod uses {', '.join(wanted)}. Steam's DirectX installer wasn't found: choose them yourself."
+            subtitle = f"This mod uses {', '.join(wanted)}. Steam's DirectX installer doesn't have them all: choose them yourself."
         elif wanted:
             subtitle = f"Installed from your Steam folder when you press Play: {', '.join(wanted)}"
         elif installed:

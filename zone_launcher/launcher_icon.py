@@ -21,6 +21,41 @@ ORIGINAL = "X-ZoneLauncher-Original-Icon"
 SIZE = 256
 
 
+def _brightness(r: int, g: int, b: int) -> int:
+    # Perceived brightness (Rec. 601), 0 to 255.
+    return (r * 299 + g * 587 + b * 114) // 1000
+
+
+def greyscale(pixels: bytes, width: int, height: int, stride: int) -> bytes:
+    """RGBA pixels in grey."""
+    out = bytearray(pixels)
+    for y in range(height):
+        row = y * stride
+        for i in range(row, row + width * 4, 4):
+            out[i] = out[i + 1] = out[i + 2] = _brightness(*out[i:i + 3])
+    return bytes(out)
+
+
+def _coverage(brightness: int) -> float:
+    """How bright a pixel counts as, 0 to 1: a soft step from dark to bright keeps the edges smooth."""
+    t = min(1.0, max(0.0, (brightness / 255 - 0.3) / 0.3))
+    return t * t * (3 - 2 * t)
+
+
+def one_colour(pixels: bytes, width: int, height: int, stride: int, white: bool) -> bytes:
+    """RGBA pixels in pure white or black, on nothing. A silhouette would be a blank disc, so the
+    picture is kept: white keeps the bright parts of it, black the dark parts."""
+    out = bytearray(pixels)
+    value = 255 if white else 0
+    for y in range(height):
+        row = y * stride
+        for i in range(row, row + width * 4, 4):
+            kept = _coverage(_brightness(*out[i:i + 3]))
+            out[i + 3] = int(out[i + 3] * (kept if white else 1 - kept))
+            out[i] = out[i + 1] = out[i + 2] = value
+    return bytes(out)
+
+
 def share_dir() -> Path:
     # The host's folder, also inside the Flatpak (whose XDG_DATA_HOME is its own).
     return Path.home() / ".local" / "share"
