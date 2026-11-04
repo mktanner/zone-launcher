@@ -177,6 +177,26 @@ class CrashSummaryTests(unittest.TestCase):
         self.assertIsNone(engine.crash_summary("* phase time: 1 ms\n* End of synchronization\n"))
 
 
+class GameFoldersTests(unittest.TestCase):
+    def test_standalone_mods_and_hidden_folders_are_left_out(self):
+        found = [("cs", Path("/games/Clear Sky")), ("cs", Path("/games/Clear Sky Complete")),
+                 ("soc", Path("/games/Hidden"))]
+        self.assertEqual(detect.game_folders(found, ["/games/Hidden"], ["/games/Clear Sky Complete"]),
+                         ["/games/Clear Sky"])
+
+    def test_a_mod_added_through_a_link_is_still_recognised(self):
+        with tempfile.TemporaryDirectory() as folder:
+            real = Path(folder).resolve() / "Clear Sky Complete"
+            real.mkdir()
+            link = Path(folder).resolve() / "link"
+            link.symlink_to(real)
+            self.assertEqual(detect.game_folders([("cs", real)], [], [str(link)]), [])
+
+    def test_a_folder_stops_being_a_mod_once_removed(self):
+        found = [("cs", Path("/games/Clear Sky Complete"))]
+        self.assertEqual(detect.game_folders(found, [], []), ["/games/Clear Sky Complete"])
+
+
 class IconColourTests(unittest.TestCase):
     def load(self, saved: dict) -> Config:
         with tempfile.TemporaryDirectory() as folder:

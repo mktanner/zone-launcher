@@ -43,6 +43,73 @@ class GogTests(unittest.TestCase):
         self.with_program()
         self.assertIsNone(gog.setup_program(Install("cs", self.game, ["Steam"])))
 
+    def scripted(self):
+        self.script([
+            {"install": {"action": "saveToFile", "arguments": {
+                "filename": "{app}/fsgame.ltx",
+                "text": "$app_data_root$ = true | false| {userdocs}\\Stalker-SHOC\n$logs$ = true | false| $app_data_root$| logs\\\n"}}},
+            {"install": {"action": "execute", "arguments": {"argument": "+r fsgame.ltx", "executable": "{sys}/attrib.exe"}}},
+            {"install": {"action": "supportData", "arguments": {
+                "source": "{supportDir}/userdocs/user.ltx", "target": "{userdocs}/STALKER-SHOC/user.ltx", "type": "File"}}},
+            {"install": {"action": "savePath", "arguments": {"savePath": "{userdocs}/STALKER-SHOC", "type": "Folder"}}},
+            {"install": {"action": "setRegistry", "arguments": {"root": "HKEY_LOCAL_MACHINE", "valueData": "{app}"}}},
+        ])
+        (self.support / "userdocs").mkdir()
+        (self.support / "userdocs" / "user.ltx").write_text("vid_mode 1024x768\n")
+
+    def test_a_script_of_steps_is_a_setup_too(self):
+        self.scripted()
+        self.assertIsNone(gog.setup_program(self.install))
+        self.assertTrue(gog.has_setup(self.install))
+        self.assertFalse(gog.setup_done(self.install))
+        self.assertFalse(gog.can_run_again(self.install))
+
+    def test_a_folder_without_a_script_has_no_setup(self):
+        self.assertFalse(gog.has_setup(self.install))
+        self.assertFalse(gog.setup_done(self.install))
+
+    def test_the_script_writes_its_files_in_the_game_folder(self):
+        self.scripted()
+        with mock.patch.object(standalone, "run_program") as run_program:
+            gog.run_setup(self.install)
+        run_program.assert_not_called()
+        self.assertEqual((self.game / "fsgame.ltx").read_text().splitlines()[0],
+                         "$app_data_root$ = true | false| $fs_root$| userdocs\\Stalker-SHOC\\")
+        self.assertEqual((self.game / "userdocs" / "STALKER-SHOC" / "user.ltx").read_text(), "vid_mode 1024x768\n")
+        self.assertTrue(gog.setup_done(self.install))
+
+    def test_the_script_leaves_what_is_already_there(self):
+        self.scripted()
+        (self.game / "fsgame.ltx").write_text("mine")
+        settings = self.game / "userdocs" / "STALKER-SHOC" / "user.ltx"
+        settings.parent.mkdir(parents=True)
+        settings.write_text("my settings")
+        gog.run_setup(self.install)
+        self.assertEqual((self.game / "fsgame.ltx").read_text(), "mine")
+        self.assertEqual(settings.read_text(), "my settings")
+
+    def test_the_script_cant_write_outside_the_game(self):
+        self.script([
+            {"install": {"action": "saveToFile", "arguments": {"filename": "{app}/../outside.txt", "text": "x"}}},
+            {"install": {"action": "saveToFile", "arguments": {"filename": "/tmp/zl-outside.txt", "text": "x"}}},
+            {"install": {"action": "saveToFile", "arguments": {"filename": "{sys}/evil.dll", "text": "x"}}},
+            {"install": {"action": "supportData", "arguments": {
+                "source": "{supportDir}/../secret", "target": "{app}/secret", "type": "File"}}},
+        ])
+        (self.tmp / "secret").write_text("x")
+        self.assertFalse(gog.has_setup(self.install))
+        with self.assertRaises(OSError):
+            gog.run_setup(self.install)
+        self.assertFalse((self.tmp / "outside.txt").exists())
+        self.assertFalse((self.game / "secret").exists())
+
+    def test_settings_are_skipped_without_the_stores_support_files(self):
+        self.scripted()
+        install = Install("soc", self.game, ["Heroic"])
+        gog.run_setup(install)
+        self.assertTrue((self.game / "fsgame.ltx").is_file())
+        self.assertFalse((self.game / "userdocs").exists())
+
     def test_arguments_say_where_and_in_which_language(self):
         arguments = gog.setup_arguments(self.install)
         self.assertIn("/DIR=Z:" + str(self.game).replace("/", "\\"), arguments)

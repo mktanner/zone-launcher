@@ -203,6 +203,13 @@ def search(roots: list[Path], depth: int = 5, budget: int = 20000) -> list[tuple
     return [(key, path) for path, key in found.items()]
 
 
+def game_folders(found: list[tuple[str, Path]], hidden: list[str], standalone: list[str]) -> list[str]:
+    """The folders a search found to list as games: not the ones hidden, nor standalone mods, which
+    can look like the game they're built on."""
+    mods = {Path(p).resolve() for p in standalone}
+    return sorted(str(p) for _, p in found if str(p) not in hidden and p.resolve() not in mods)
+
+
 def locate(folder: Path) -> list[tuple[str, Path]]:
     """The games in a folder the user picked: the folder itself, the game it's part of (bin/,
     resources/...), the install a launcher-made folder links to, or the games somewhere inside it."""

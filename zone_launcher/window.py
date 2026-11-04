@@ -478,23 +478,25 @@ class LauncherWindow(Adw.ApplicationWindow):
             install, run, self.engine.share if self.engine else None).present(self))
         group.add(browse)
 
-        if gog.setup_program(install):
+        if gog.has_setup(install):
             group.add(self.build_gog_setup_row(key, install))
         return group
 
     def build_gog_setup_row(self, key: str, install: detect.Install) -> Adw.ActionRow:
         done = gog.setup_done(install)
+        how = ("puts the language pack in the game's folder. It runs with Proton or Wine."
+               if gog.setup_program(install) else "puts the game's file list and default settings in its folder.")
         row = Adw.ActionRow(title="GOG's setup", use_markup=False,
                             subtitle="Already run for this copy." if done else
-                            "Heroic hasn't run it for this copy. It's what GOG's installer does after downloading: it "
-                            "puts the language pack in the game's folder. It runs with Proton or Wine.")
+                            f"Heroic hasn't run it for this copy. It's what GOG's installer does after downloading: it {how}")
         busy = self.busy.get(key) == GOG_SETUP_STATUS
         if busy:
             row.add_suffix(Gtk.Spinner(spinning=True, valign=Gtk.Align.CENTER))
-        run = Gtk.Button(label="Run Again" if done else "Run", valign=Gtk.Align.CENTER,
-                         sensitive=not busy and key not in self.running and key not in self.busy)
-        run.connect("clicked", lambda *_: self.run_gog_setup(key, install))
-        row.add_suffix(run)
+        if not done or gog.can_run_again(install):
+            run = Gtk.Button(label="Run Again" if done else "Run", valign=Gtk.Align.CENTER,
+                             sensitive=not busy and key not in self.running and key not in self.busy)
+            run.connect("clicked", lambda *_: self.run_gog_setup(key, install))
+            row.add_suffix(run)
         return row
 
     def run_gog_setup(self, key: str, install: detect.Install):
@@ -955,8 +957,7 @@ class LauncherWindow(Adw.ApplicationWindow):
 
         def done(found):
             self.set_searching(False)
-            hidden = set(self.config.hidden_folders)
-            paths = sorted(str(p) for _, p in found if str(p) not in hidden)
+            paths = detect.game_folders(found, self.config.hidden_folders, self.config.standalone_mods)
             known = {str(i.path) for i in self.installs}
             new = [p for p in paths if p not in known]
             if paths != self.config.found_folders:

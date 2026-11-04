@@ -48,9 +48,12 @@ yourself, see [Building](#building).
     Heroic downloads it but never copies it, so starting a new game crashes with
     `There is no sound collection with path 'characters_voice\scenario\...'`. The launcher copies
     the pack in from Heroic's GOG support folder, or from the game's own `languages/` folder.
-    Clear Sky's Details can also run **GOG's setup**, the step Heroic skips, with Proton or Wine. It
-    puts the pack in the game's own folder. Its change to `fsgame.ltx` is undone, since it names a
-    path inside its Wine prefix. Shadow of Chernobyl and Call of Pripyat have no such program.
+    Each GOG game's Details can also run **GOG's setup**, the step Heroic skips. Clear Sky's is a
+    program that runs with Proton or Wine: it puts the pack in the game's own folder, and its
+    change to `fsgame.ltx` is undone, since it names a path inside its Wine prefix. Shadow of
+    Chernobyl's and Call of Pripyat's are steps in GOG's install script, which the launcher follows:
+    it writes `fsgame.ltx` and the default settings into the game's folder, under `userdocs`, and
+    leaves anything already there. It skips their registry values, which only a Windows install reads.
   - **`fsgame.ltx`** missing or wrong for the game: installs OpenXRay's version, or for Shadow of
     Chernobyl one with its `config\` layout (OpenXRay only ships the Clear Sky/Call of Pripyat
     layout; GOG's installer normally writes Shadow of Chernobyl's). Keeps any old one as
