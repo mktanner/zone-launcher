@@ -3,7 +3,8 @@
 OpenXRay can't run them, since their changes are compiled into that engine, so they run with the
 system's Wine, a Wine build or a version of Proton, all on the host: from inside the Flatpak, through
 flatpak-spawn. The folder is used where it is and saves stay in it (its fsgame.ltx says so); only the
-Wine prefix, Wine's log and the libraries installed for the mod live elsewhere.
+Wine prefix, Wine's log and the libraries installed for the mod live elsewhere. With addons switched
+on, the game starts from a folder of links instead: the mod's files with the addons' on top.
 """
 
 import hashlib
@@ -65,6 +66,11 @@ RUNNER_FOLDERS = (runtimes.PROTON_FOLDER, ".local/share/lutris/runners/wine", ".
                   ".var/app/com.heroicgameslauncher.hgl/config/heroic/tools/proton",
                   ".var/app/com.heroicgameslauncher.hgl/config/heroic/tools/wine",
                   ".local/share/bottles/runners", ".var/app/com.usebottles.bottles/data/bottles/runners")
+# The folders an addon adds files to or replaces them in, with the one fsgame.ltx loads archives from
+# (Anomaly's db/). Archives loose in an addon go where it loads extra ones from.
+ADDON_FOLDERS = ("gamedata", "bin")
+# Those places, in the order they're tried.
+ARCHIVE_ALIASES = ("$arch_dir_addons$", "$arch_dir_patches$")
 # The versions of Proton that run these games best, in order; newest first within each. Any Proton
 # beats any Wine: it brings DXVK and the fixes games need, and only needs Steam to have downloaded it.
 BEST_PROTON = (r"cachyos", r"experimental", r"^ge-proton", r"^proton \d")
@@ -162,6 +168,11 @@ class Standalone:
         return self.data_dir / "libraries"
 
     @property
+    def play_dir(self) -> Path:
+        """Where the game starts from with addons on: links to the mod's files and the addons'."""
+        return self.data_dir / "play"
+
+    @property
     def wine_log(self) -> Path:
         return self.data_dir / "wine.log"
 
@@ -220,6 +231,112 @@ def app_data_folder(folder: Path) -> str | None:
         return None
     name = fields[3].rstrip("\\/")
     return name if name and ".." not in name else None
+
+
+def fsgame_folder(folder: Path, alias: str) -> str | None:
+    """The folder fsgame.ltx gives an alias, relative to the game's folder, if it's inside it."""
+    try:
+        text = (folder / "fsgame.ltx").read_text(errors="replace")
+    except OSError:
+        return None
+    entries = {}
+    for match in re.finditer(r"^\s*(\$[^$\s]+\$)\s*=(.*)$", text, re.M):
+        entries[match.group(1)] = [f.strip() for f in match.group(2).split("|")]
+
+    def resolve(name: str, depth: int) -> str | None:
+        if name == "$fs_root$":
+            return ""
+        fields = entries.get(name)
+        if not fields or len(fields) < 3 or depth > 10:
+            return None
+        root, add = fields[2], fields[3] if len(fields) > 3 else ""
+        if not root.startswith("$"):
+            if len(fields) > 3 or ":" in root:
+                return None  # a folder somewhere else
+            root, add = "$fs_root$", root  # "true| false| appdata\\": relative to the game's folder
+        base = resolve(root, depth + 1)
+        if base is None:
+            return None
+        return "/".join(part for part in (*base.split("/"), *re.split(r"[\\/]+", add)) if part)
+
+    found = resolve(alias, 0)
+    return found if found and ".." not in found.split("/") else None
+
+
+def addons_key(mod: Standalone) -> str:
+    """Its addons' place among the libraries of mods, which are kept by game."""
+    return f"{GAME}-{mod.data_dir.name}"
+
+
+def _clear_links(folder: Path) -> None:
+    """Removes the links and empty folders in a folder, keeping files the game wrote there."""
+    if folder.is_symlink():
+        folder.unlink()
+    folder.mkdir(parents=True, exist_ok=True)
+    for dirpath, dirnames, filenames in os.walk(folder, topdown=False):
+        for name in filenames + dirnames:
+            path = Path(dirpath) / name
+            if path.is_symlink():
+                path.unlink()
+            elif path.is_dir() and not any(path.iterdir()):
+                path.rmdir()
+
+
+def _as_spelled(root: Path, rel: Path) -> Path:
+    """rel, spelled like what's already there: Windows doesn't tell gamedata/Configs from gamedata/configs."""
+    current, spelled = root, []
+    for part in rel.parts:
+        if not (current / part).exists() and current.is_dir():
+            part = next((e.name for e in current.iterdir() if e.name.lower() == part.lower()), part)
+        spelled.append(part)
+        current = current / part
+    return Path(*spelled)
+
+
+def compose_addons(mod: Standalone) -> tuple[Path, list[str]]:
+    """The folder to start the mod from, and warnings to show. With addons on, it's rebuilt each
+    time from links to the mod's files with the switched-on addons' on top, in load order, so the
+    mod's own folder is never changed. With none on, it's the mod's folder."""
+    parts = mods.enabled_parts(addons_key(mod))
+    if not parts:
+        return mod.path, []
+    play = mod.play_dir
+    archives = next((found for alias in ARCHIVE_ALIASES if (found := fsgame_folder(mod.path, alias))), None)
+    merged = {*ADDON_FOLDERS, *([archives.split("/")[0]] if archives else [])}
+    # Saves go where fsgame.ltx says: that has to be the mod's own folder, linked from here.
+    if saves := app_data_folder(mod.path):
+        (mod.path / saves).mkdir(parents=True, exist_ok=True)
+    _link_files({entry.name: entry for entry in mod.path.iterdir() if entry.name not in merged}, play)
+    for name in merged:
+        _clear_links(play / name)
+        if (mod.path / name).is_dir():
+            for entry in (mod.path / name).iterdir():
+                if not (play / name / entry.name).exists():
+                    (play / name / entry.name).symlink_to(entry)
+
+    warnings = []
+
+    def link(rel: Path, source: Path, addon: mods.Mod):
+        rel = _as_spelled(play, rel)
+        mods.real_dir(play, rel.parent)
+        target = play / rel
+        if target.is_symlink():
+            target.unlink()  # the mod's own file, or a lower-priority addon's
+        elif target.exists():
+            warnings.append(f"{addon.name}: kept {rel.as_posix()}, which the game wrote")
+            return
+        target.symlink_to(source)
+
+    for index, (addon, comp, folder) in enumerate(parts):
+        for content in sorted(merged):
+            for rel in mods.content_files(folder, content):
+                link(Path(content, rel), folder / content / rel, addon)
+        if comp.archives and not archives:
+            warnings.append(f"{addon.name}: its archives were skipped, since the game's fsgame.ltx doesn't "
+                            "say where extra archives go")
+        for rel in comp.archives if archives else ():
+            link(Path(archives, f"{mods.PATCH_PREFIX}{index:03d}_{addon.id}_{Path(rel).name}"), folder / rel, addon)
+    return play, warnings
 
 
 def has_avx() -> bool:
@@ -806,16 +923,18 @@ def prepare(mod: Standalone) -> None:
     place_libraries(mod)
 
 
-def launch(mod: Standalone) -> subprocess.Popen:
+def launch(mod: Standalone, folder: Path | None = None) -> subprocess.Popen:
+    """Starts the game from its folder, or another one with its files (see compose_addons)."""
+    folder = folder or mod.path
     _make_prefix_folder(mod)
     # Proton doesn't find a program by a relative path, and exits without saying so.
-    program = str(mod.path / mod.exe) if mod.runner.is_proton else mod.exe
+    program = str(folder / mod.exe) if mod.runner.is_proton else mod.exe
     try:
         arguments = shlex.split(mod.settings.arguments)
     except ValueError:
         arguments = []
     with open(mod.wine_log, "wb") as log:
-        return _spawn(mod, mod.runner.command(program, *arguments), log)
+        return _spawn(mod, mod.runner.command(program, *arguments), log, cwd=folder)
 
 
 def run_program(mod: Standalone, program: Path, arguments: list[str]) -> subprocess.Popen:

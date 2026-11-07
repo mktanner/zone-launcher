@@ -1,5 +1,6 @@
 """Mod library: install mod archives, choose which parts are on and in what order, and assemble the
-enabled ones into a launcher-managed game folder with links.
+enabled ones into a launcher-managed game folder with links. Standalone mods keep a library of
+addons the same way, under a key of their own (see standalone.compose_addons).
 
 A mod is unpacked once into <data>/zone-launcher/mods/<game>/<mod id>/. Its parts ("components") are
 the folders inside it that hold gamedata/, patches/ or .db archives: the top-most one is the main
@@ -40,6 +41,8 @@ class Component:
     name: str
     gamedata: bool
     archives: list[str]  # .db/.xdb files, relative to the component folder
+    # Has a bin/ folder to use: only addons of standalone mods, which run their own engine.
+    bin: bool = False
 
 
 @dataclass
@@ -196,8 +199,10 @@ def extract(archive: Path, dest: Path) -> None:
     raise ModError("7-Zip or bsdtar is needed to unpack .7z and .rar archives, and neither was found.")
 
 
-def _is_component(folder: Path) -> bool:
+def _is_component(folder: Path, standalone: bool = False) -> bool:
     if (folder / "gamedata").is_dir() or (folder / "patches").is_dir():
+        return True
+    if standalone and ((folder / "bin").is_dir() or (folder / "db").is_dir()):
         return True
     return any(p.suffix.lower() in (".db", ".xdb") for p in folder.iterdir() if p.is_file())
 
@@ -211,21 +216,24 @@ def _archives_in(folder: Path) -> list[str]:
     return found
 
 
-def find_components(root: Path) -> list[Component]:
-    """Every folder in the mod that holds game content, shallowest first."""
+def find_components(root: Path, standalone: bool = False) -> list[Component]:
+    """Every folder in the mod that holds game content, shallowest first. For a standalone mod's
+    addon, bin/ and db/ folders count as content too."""
+    content = {"gamedata", "patches", "bin", *(("db",) if standalone else ())}
     found = []
     for folder in sorted([root, *(p for p in root.rglob("*") if p.is_dir())],
                          key=lambda p: (len(p.relative_to(root).parts), str(p))):
         rel = folder.relative_to(root)
         # Content folders themselves aren't components.
-        if any(part.lower() in ("gamedata", "patches", "bin") for part in rel.parts):
+        if any(part.lower() in content for part in rel.parts):
             continue
-        if _is_component(folder):
+        if _is_component(folder, standalone):
             found.append(Component(
                 path="" if rel == Path(".") else str(rel),
                 name=" / ".join(rel.parts) if rel.parts else "Main files",
                 gamedata=(folder / "gamedata").is_dir(),
                 archives=_archives_in(folder),
+                bin=standalone and (folder / "bin").is_dir(),
             ))
     return found
 
@@ -237,9 +245,11 @@ def find_engine_files(root: Path) -> list[str]:
     return found[:4]
 
 
-def _warnings(root: Path, engine: list[str]) -> list[str]:
-    warnings = []
+def _warnings(root: Path, engine: list[str], standalone: bool = False) -> list[str]:
     has_fsgame = any(p.name.lower() == "fsgame.ltx" for p in root.rglob("*"))
+    if standalone:
+        return ["Includes its own fsgame.ltx, which was ignored: the game's own is used."] if has_fsgame else []
+    warnings = []
     if engine:
         warnings.append(ENGINE_WARNING.format(files=", ".join(engine)))
         if has_fsgame:
@@ -257,9 +267,11 @@ def _slug(text: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")[:40] or "mod"
 
 
-def install(game: str, source: Path, name: str | None = None, origin: dict[str, str] | None = None) -> Mod:
+def install(game: str, source: Path, name: str | None = None, origin: dict[str, str] | None = None,
+            standalone: bool = False) -> Mod:
     """Install a mod from an archive or an already unpacked folder. origin says where it was
-    downloaded from (see Mod.source)."""
+    downloaded from (see Mod.source). standalone: it's an addon for a standalone mod, which runs its
+    own engine, so engine files are welcome and its bin/ folder is used."""
     lib = library_dir(game)
     lib.mkdir(parents=True, exist_ok=True)
     name = name or re.sub(r"\.(zip|7z|rar)$", "", source.name, flags=re.IGNORECASE)
@@ -274,16 +286,16 @@ def install(game: str, source: Path, name: str | None = None, origin: dict[str, 
         # Archives often wrap everything in one folder named after the mod.
         root = staging
         entries = list(root.iterdir())
-        while len(entries) == 1 and entries[0].is_dir() and not _is_component(root):
+        while len(entries) == 1 and entries[0].is_dir() and not _is_component(root, standalone):
             root = entries[0]
             entries = list(root.iterdir())
-        components = find_components(root)
+        components = find_components(root, standalone)
         if not components:
             raise ModError(f"{source.name} has no gamedata/ or patches/ folder, so it doesn't look "
                            "like a mod for this game.")
         size = sum(p.stat().st_size for p in root.rglob("*") if p.is_file() and not p.is_symlink())
-        engine = find_engine_files(root)
-        mod = Mod(mod_id, name, source.name, date.today().isoformat(), components, _warnings(root, engine),
+        engine = [] if standalone else find_engine_files(root)
+        mod = Mod(mod_id, name, source.name, date.today().isoformat(), components, _warnings(root, engine, standalone),
                   dict(origin or {}), size, "" if source.is_dir() else str(source.resolve()), engine)
         _save_mod(root, mod)
         final = lib / mod_id
@@ -346,7 +358,8 @@ def move(game: str, mod_id: str, delta: int) -> None:
 
 # ----- assembling into a game folder --------------------------------------------------------------
 
-def _enabled_parts(game: str) -> list[tuple[Mod, Component, Path]]:
+def enabled_parts(game: str) -> list[tuple[Mod, Component, Path]]:
+    """Every switched-on part, in load order: the mod, the part, and its folder."""
     lib = library_dir(game)
     parts = []
     for mod in list_mods(game):
@@ -356,16 +369,21 @@ def _enabled_parts(game: str) -> list[tuple[Mod, Component, Path]]:
     return parts
 
 
+def content_files(folder: Path, content: str) -> list[str]:
+    """The files in one of a part's content folders (gamedata, bin), relative to it."""
+    root = folder / content
+    return sorted(str(p.relative_to(root)) for p in root.rglob("*") if p.is_file()) if root.is_dir() else []
+
+
 def gamedata_files(folder: Path) -> list[str]:
-    gamedata = folder / "gamedata"
-    return sorted(str(p.relative_to(gamedata)) for p in gamedata.rglob("*") if p.is_file()) if gamedata.is_dir() else []
+    return content_files(folder, "gamedata")
 
 
 def conflicts(game: str) -> dict[str, dict[str, int]]:
     """For each enabled mod, how many loose files it takes over from each lower-priority mod."""
     owner: dict[str, str] = {}
     result: dict[str, dict[str, int]] = {}
-    for mod, _comp, folder in _enabled_parts(game):
+    for mod, _comp, folder in enabled_parts(game):
         for rel in gamedata_files(folder):
             previous = owner.get(rel)
             if previous and previous != mod.id:
@@ -375,7 +393,7 @@ def conflicts(game: str) -> dict[str, dict[str, int]]:
     return result
 
 
-def _real_dir(root: Path, rel: Path) -> Path:
+def real_dir(root: Path, rel: Path) -> Path:
     """Make root/rel a real folder, splitting any linked folder on the way into per-entry links."""
     current = root
     for part in rel.parts:
@@ -418,7 +436,7 @@ def compose(install: Install) -> list[str]:
     from .setup import link, linked_source
 
     target = install.path
-    parts = _enabled_parts(install.game)
+    parts = enabled_parts(install.game)
     source = linked_source(target)
     if source is None:
         if parts:
@@ -436,7 +454,7 @@ def compose(install: Install) -> list[str]:
     for index, (mod, comp, folder) in enumerate(parts):
         for rel in gamedata_files(folder):
             dst = gamedata / rel
-            _real_dir(gamedata, Path(rel).parent)
+            real_dir(gamedata, Path(rel).parent)
             if dst.is_symlink():
                 dst.unlink()  # the original game's file or a lower-priority mod's
             elif dst.exists():

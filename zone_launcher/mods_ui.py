@@ -1,4 +1,5 @@
-"""The mods window for one game: browse ModDB, install, switch on and off, order and remove mods."""
+"""The mods window for one game: browse ModDB, install, switch on and off, order and remove mods.
+The same window keeps a standalone mod's addons, without ModDB."""
 
 import threading
 from pathlib import Path
@@ -15,11 +16,15 @@ from .moddb_ui import BrowsePage, Downloads, installed_message, open_uri, pendin
 
 
 class ModsDialog(Adw.PreferencesDialog):
-    def __init__(self, game: str, downloads: Downloads, on_change=None):
+    def __init__(self, game: str, downloads: Downloads, on_change=None, title: str | None = None,
+                 standalone: bool = False):
         # Tall enough for ModDB's lists; smaller windows shrink it.
-        super().__init__(title=f"{GAMES[game].title} mods", search_enabled=False, content_width=720,
+        super().__init__(title=title or f"{GAMES[game].title} mods", search_enabled=False, content_width=720,
                          content_height=680)
         self.game = game
+        # A standalone mod's addons: the library of game's key standalone.addons_key().
+        self.standalone = standalone
+        self.noun = "addon" if standalone else "mod"
         self.downloads = downloads
         self.on_change = on_change
         self.installing: str | None = None
@@ -46,14 +51,17 @@ class ModsDialog(Adw.PreferencesDialog):
 
     def build_install_group(self) -> Adw.PreferencesGroup:
         group = Adw.PreferencesGroup(
-            description="Mods are applied when you press Play. Changing mods in the middle of a "
+            description="Addons are applied when you press Play, and the mod's own folder isn't changed. Changing "
+                        "addons in the middle of a playthrough can break your saves." if self.standalone else
+                        "Mods are applied when you press Play. Changing mods in the middle of a "
                         "playthrough can break your saves.")
         buttons = Gtk.Box(spacing=6, halign=Gtk.Align.START)
-        browse = Gtk.Button(label="Browse ModDB…", css_classes=["suggested-action"],
-                            tooltip_text="Find mods on ModDB, download them in your browser, and they're installed "
-                                         "when the download finishes")
-        browse.connect("clicked", lambda *_: self.push_subpage(BrowsePage(self, self.game, self.downloads)))
-        buttons.append(browse)
+        if not self.standalone:
+            browse = Gtk.Button(label="Browse ModDB…", css_classes=["suggested-action"],
+                                tooltip_text="Find mods on ModDB, download them in your browser, and they're "
+                                             "installed when the download finishes")
+            browse.connect("clicked", lambda *_: self.push_subpage(BrowsePage(self, self.game, self.downloads)))
+            buttons.append(browse)
         for label, handler in (("Install from file…", self.on_install_file),
                                ("Install from folder…", self.on_install_folder)):
             btn = Gtk.Button(label=label)
@@ -84,10 +92,11 @@ class ModsDialog(Adw.PreferencesDialog):
         installed = list(reversed(mods.list_mods(self.game)))  # highest priority first
         group = Adw.PreferencesGroup(
             title="Installed",
-            description="Higher in the list wins when two mods change the same file." if len(installed) > 1 else "")
+            description=f"Higher in the list wins when two {self.noun}s change the same file." if len(installed) > 1 else "")
         if not installed:
-            group.add(Adw.ActionRow(title="No mods yet",
-                                    subtitle="Browse ModDB, install a zip, 7z or rar mod archive, or drop one here."))
+            group.add(Adw.ActionRow(title=f"No {self.noun}s yet",
+                                    subtitle="Install a zip, 7z or rar addon archive, or drop one here." if self.standalone
+                                    else "Browse ModDB, install a zip, 7z or rar mod archive, or drop one here."))
             return group
         conflicts = mods.conflicts(self.game)
         names = {m.id: m.name for m in installed}
@@ -112,7 +121,7 @@ class ModsDialog(Adw.PreferencesDialog):
             row.add_suffix(Gtk.Image(icon_name="dialog-warning-symbolic", valign=Gtk.Align.CENTER,
                                      tooltip_text="Made for its own modified engine, which OpenXRay replaces. "
                                                   "Expand for details."))
-        delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text="Delete this mod", valign=Gtk.Align.CENTER,
+        delete = Gtk.Button(icon_name="user-trash-symbolic", tooltip_text=f"Delete this {self.noun}", valign=Gtk.Align.CENTER,
                             css_classes=["flat"])
         delete.connect("clicked", lambda *_: self.on_remove(mod))
         row.add_suffix(delete)
@@ -139,7 +148,7 @@ class ModsDialog(Adw.PreferencesDialog):
         for icon, tip, handler, sensitive in (
             ("go-up-symbolic", "Higher priority", lambda *_: self.on_move(mod, +1), position > 0),
             ("go-down-symbolic", "Lower priority", lambda *_: self.on_move(mod, -1), position < count - 1),
-            ("folder-open-symbolic", "Open the mod's folder", lambda *_: self.on_open(mod), True),
+            ("folder-open-symbolic", f"Open the {self.noun}'s folder", lambda *_: self.on_open(mod), True),
         ) + ((("adw-external-link-symbolic", f"Open its page on {source}",
                lambda *_: open_uri(self, mod.source.get("page") or mod.source["file"]), True),) if source else ()):
             btn = Gtk.Button(icon_name=icon, tooltip_text=tip, sensitive=sensitive)
@@ -192,7 +201,7 @@ class ModsDialog(Adw.PreferencesDialog):
     def on_remove(self, mod: mods.Mod):
         dialog = Adw.AlertDialog(heading=f"Delete {mod.name}?",
                                  body=f"Its files ({files.human_size(mods.disk_size(self.game, mod))}) are deleted "
-                                      "from the mod library. The game itself isn't changed until you next press Play.")
+                                      f"from the {self.noun} library. The game itself isn't changed until you next press Play.")
         dialog.add_response("cancel", "Cancel")
         dialog.add_response("remove", "Delete")
         dialog.set_response_appearance("remove", Adw.ResponseAppearance.DESTRUCTIVE)
@@ -222,15 +231,15 @@ class ModsDialog(Adw.PreferencesDialog):
 
     def on_install_file(self, _btn):
         filters = Gio.ListStore.new(Gtk.FileFilter)
-        archives = Gtk.FileFilter(name="Mod archives (zip, 7z, rar)")
+        archives = Gtk.FileFilter(name=f"{self.noun.title()} archives (zip, 7z, rar)")
         for suffix in mods.ARCHIVE_SUFFIXES:
             archives.add_suffix(suffix.lstrip("."))
         filters.append(archives)
-        dialog = Gtk.FileDialog(title="Choose a mod archive", filters=filters)
+        dialog = Gtk.FileDialog(title=f"Choose {'an addon' if self.standalone else 'a mod'} archive", filters=filters)
         dialog.open(self.get_root(), None, self.on_chosen, "open_finish")
 
     def on_install_folder(self, _btn):
-        Gtk.FileDialog(title="Choose an unpacked mod folder").select_folder(
+        Gtk.FileDialog(title=f"Choose an unpacked {self.noun} folder").select_folder(
             self.get_root(), None, self.on_chosen, "select_folder_finish")
 
     def on_chosen(self, dialog, result, finish):
@@ -256,7 +265,7 @@ class ModsDialog(Adw.PreferencesDialog):
 
         def work():
             try:
-                mod = mods.install(self.game, source)
+                mod = mods.install(self.game, source, standalone=self.standalone)
                 message = installed_message(mod)
             except (mods.ModError, OSError) as e:
                 message = f"Couldn't install {source.name}: {e}"

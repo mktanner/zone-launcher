@@ -95,6 +95,12 @@ yourself, see [Building](#building).
   launcher's own folder) and, without Steam's copy, **Microsoft's DirectX libraries** (from
   Microsoft). Both are checked against their checksums. Wine itself comes from your distribution.
   Each mod shows its own icon: its `icon.png`, or else its program's.
+  **Addons** on a mod installs addons for it (zip, 7z or rar archives, or folders, with
+  `gamedata`, `bin` or `db` content) and switches them on and off, with a load order and optional
+  parts like native mods. They're applied when you press Play: the game then starts from a folder
+  of links beside its Wine prefix in `~/.local/share/zone-launcher/standalone`, with the addons
+  laid over the mod's files, so the mod's folder isn't changed and its saves stay where they are.
+  Loose `.db` archives go into the folder the mod's `fsgame.ltx` names for addons or patches.
   **Manage** on a mod chooses which program starts it (popular engines are picked automatically,
   and any `.exe` in the folder can be chosen by hand), checks that it has what it needs (by reading
   which libraries the program loads and asking Wine which it provides, so mods don't need listing

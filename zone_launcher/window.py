@@ -321,6 +321,8 @@ class LauncherWindow(Adw.ApplicationWindow):
         running = mod.key in self.running
         ready = bool(mod.exe) and (mod.path / mod.exe).is_file()
         subtitle = f"{mod.exe} · {mod.path}" if ready else f"Needs attention: {mod.path}"
+        if addons := sum(addon.is_enabled for addon in mods.list_mods(standalone.addons_key(mod))):
+            subtitle = f"{addons} addon{'s' if addons != 1 else ''} on · {subtitle}"
         row = Adw.ActionRow(title=GLib.markup_escape_text(mod.name), subtitle=GLib.markup_escape_text(subtitle),
                             subtitle_lines=1, activatable=not running)
         if not running:
@@ -333,6 +335,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         manage = Gtk.Button(label="Manage", valign=Gtk.Align.CENTER, sensitive=not running,
                             tooltip_text="Choose its launcher, Wine or Proton, check its files, and browse them")
         manage.connect("clicked", lambda *_: ManageDialog(self, mod).present(self))
+        addons_btn = Gtk.Button(label="Addons", valign=Gtk.Align.CENTER, sensitive=not running,
+                                tooltip_text="Install addons and choose which are on, without changing the mod's folder")
+        addons_btn.connect("clicked", lambda *_: self.show_addons(mod))
+        row.add_suffix(addons_btn)
         row.add_suffix(manage)
         play = Gtk.Button(label="Stop" if running else "Play", valign=Gtk.Align.CENTER, sensitive=ready or running,
                           css_classes=["destructive-action" if running else "suggested-action", "pill"])
@@ -360,6 +366,10 @@ class LauncherWindow(Adw.ApplicationWindow):
         self.mods_dialog = ModsDialog(key, self.downloads, on_change=self.refresh)
         self.mods_dialog.connect("closed", lambda *_: setattr(self, "mods_dialog", None))
         self.mods_dialog.present(self)
+
+    def show_addons(self, mod: standalone.Standalone):
+        ModsDialog(standalone.addons_key(mod), self.downloads, on_change=self.refresh, title=f"{mod.name} addons",
+                   standalone=True).present(self)
 
     def show_get_mods(self):
         self.get_mods_dialog = GetModsDialog(self)
@@ -839,12 +849,24 @@ class LauncherWindow(Adw.ApplicationWindow):
             elif proc:
                 self.report_standalone_exit(mod, started, proc.returncode, stopped)
 
+        def addons_failed(error: OSError):
+            self.running.pop(mod.key, None)
+            self.refresh()
+            self.toast(f"Couldn't apply the addons: {error.strerror or error}")
+
         def work():
             proc = None
             try:
+                folder, warnings = standalone.compose_addons(mod)
+            except OSError as e:
+                GLib.idle_add(addons_failed, e)
+                return
+            for warning in warnings:
+                GLib.idle_add(self.toast, warning)
+            try:
                 standalone.prepare(mod)
                 if mod.key not in self.stopping:
-                    proc = standalone.launch(mod)
+                    proc = standalone.launch(mod, folder)
                     self.running[mod.key] = proc
                     proc.wait()
             except OSError as e:

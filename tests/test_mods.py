@@ -69,6 +69,19 @@ class ModTests(unittest.TestCase):
         self.assertTrue(any("bin/" in w for w in mod.warnings))
         self.assertEqual([m.id for m in mods.list_mods("cs")], [mod.id])
 
+    def test_a_standalone_mods_addon_keeps_its_engine_files_and_starts_on(self):
+        addon = mods.install("standalone-anomaly-1", self.make_mod("Modded Exes", {
+            "bin/AnomalyDX11AVX.exe": b"modded",
+            "bin/xrGame.dll": b"modded",
+        }), standalone=True)
+        self.assertEqual(addon.engine, [])
+        self.assertEqual(addon.warnings, [])
+        self.assertTrue(addon.components[0].bin)
+        self.assertTrue(addon.is_enabled)
+        # For the games, the same archive isn't a mod at all.
+        with self.assertRaises(mods.ModError):
+            mods.install("cs", self.make_mod("Modded Exes", {"bin/AnomalyDX11AVX.exe": b"modded"}))
+
     def test_mod_with_its_own_engine_is_flagged_and_starts_off(self):
         mod = mods.install("cs", self.make_mod("Engine Mod", {
             "gamedata/configs/system.ltx": b"needs its engine",

@@ -5,9 +5,122 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
-from zone_launcher import pe, standalone
+from zone_launcher import mods, pe, standalone
 from tests.test_core import touch
 from tests.test_pe import write_program
+
+
+ANOMALY_FSGAME = """$app_data_root$         = true 	| false	| $fs_root$		 | appdata\\
+$arch_dir$              = false	| false	| $fs_root$		 | db\\
+$arch_dir_addons$		= false	| true 	| $arch_dir$	 | addons\\
+$game_data$             = true 	| true 	| $fs_root$		 | gamedata\\
+"""
+
+
+class AddonTests(unittest.TestCase):
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.tmp = Path(self._tmp.name)
+        for patch in (mock.patch.object(Path, "home", lambda: self.tmp / "home"),
+                      mock.patch.dict(os.environ, {"XDG_DATA_HOME": str(self.tmp / "data")})):
+            patch.start()
+            self.addCleanup(patch.stop)
+        self.folder = self.tmp / "Anomaly"
+        touch(self.folder / "fsgame.ltx", ANOMALY_FSGAME.encode())
+        touch(self.folder / "bin" / "AnomalyDX11AVX.exe", b"original exe")
+        touch(self.folder / "bin" / "tbb.dll", b"original dll")
+        touch(self.folder / "db" / "configs" / "configs.db0", b"db")
+        touch(self.folder / "gamedata" / "configs" / "axr_options.ltx", b"original options")
+        touch(self.folder / "gamedata" / "configs" / "system.ltx", b"original system")
+        self.mod = standalone.load(self.folder, "bin/AnomalyDX11AVX.exe")
+        self.key = standalone.addons_key(self.mod)
+
+    def addon(self, name: str, files: dict[str, bytes]) -> mods.Mod:
+        folder = self.tmp / "downloads" / name
+        for rel, data in files.items():
+            touch(folder / rel, data)
+        return mods.install(self.key, folder, standalone=True)
+
+    def test_without_addons_the_game_starts_from_its_own_folder(self):
+        self.assertEqual(standalone.compose_addons(self.mod), (self.folder, []))
+        self.assertFalse(self.mod.play_dir.exists())
+
+    def test_addons_go_on_top_of_the_mod_and_its_folder_is_unchanged(self):
+        before = {p: p.read_bytes() for p in self.folder.rglob("*") if p.is_file()}
+        self.addon("Modded Exes", {"bin/AnomalyDX11AVX.exe": b"modded exe"})
+        self.addon("Options", {"gamedata/Configs/axr_options.ltx": b"addon options",
+                               "gamedata/scripts/new.script": b"new", "db/mods/extra.db0": b"addon db",
+                               "patch.db": b"loose db"})
+        play, warnings = standalone.compose_addons(self.mod)
+        self.assertEqual((play, warnings), (self.mod.play_dir, []))
+        self.assertEqual((play / "bin" / "AnomalyDX11AVX.exe").read_bytes(), b"modded exe")
+        self.assertEqual((play / "bin" / "tbb.dll").read_bytes(), b"original dll")
+        # Spelled like the mod's folder, which Windows wouldn't tell apart from the addon's.
+        self.assertEqual((play / "gamedata" / "configs" / "axr_options.ltx").read_bytes(), b"addon options")
+        self.assertNotIn("Configs", [p.name for p in (play / "gamedata").iterdir()])
+        self.assertEqual((play / "gamedata" / "configs" / "system.ltx").read_bytes(), b"original system")
+        self.assertEqual((play / "gamedata" / "scripts" / "new.script").read_bytes(), b"new")
+        self.assertEqual((play / "db" / "mods" / "extra.db0").read_bytes(), b"addon db")
+        self.assertEqual([p.read_bytes() for p in (play / "db" / "addons").iterdir()], [b"loose db"])
+        self.assertEqual((play / "db" / "configs" / "configs.db0").read_bytes(), b"db")
+        self.assertTrue((play / "fsgame.ltx").is_symlink())
+        # Saves go to the mod's own folder, which didn't have one yet.
+        self.assertTrue((self.folder / "appdata").is_dir())
+        self.assertEqual(os.readlink(play / "appdata"), str(self.folder / "appdata"))
+        after = {p: p.read_bytes() for p in self.folder.rglob("*") if p.is_file()}
+        self.assertEqual(after, before)
+
+    def test_load_order_decides_and_switching_off_puts_the_mods_file_back(self):
+        low = self.addon("Low", {"gamedata/configs/system.ltx": b"low"})
+        high = self.addon("High", {"gamedata/configs/system.ltx": b"high"})
+        play, _ = standalone.compose_addons(self.mod)
+        self.assertEqual((play / "gamedata" / "configs" / "system.ltx").read_bytes(), b"high")
+        mods.move(self.key, high.id, -1)
+        standalone.compose_addons(self.mod)
+        self.assertEqual((play / "gamedata" / "configs" / "system.ltx").read_bytes(), b"low")
+        mods.set_enabled(self.key, low.id, [])
+        standalone.compose_addons(self.mod)
+        self.assertEqual((play / "gamedata" / "configs" / "system.ltx").read_bytes(), b"high")
+        mods.set_enabled(self.key, high.id, [])
+        self.assertEqual(standalone.compose_addons(self.mod)[0], self.folder)
+
+    def test_files_the_game_wrote_are_kept(self):
+        self.addon("Options", {"gamedata/configs/axr_options.ltx": b"addon options"})
+        play, _ = standalone.compose_addons(self.mod)
+        (play / "gamedata" / "configs" / "axr_options.ltx").unlink()
+        (play / "gamedata" / "configs" / "axr_options.ltx").write_bytes(b"written by the game")
+        (play / "gamedata" / "configs" / "mcm.ltx").write_bytes(b"written by the game")
+        _, warnings = standalone.compose_addons(self.mod)
+        self.assertEqual((play / "gamedata" / "configs" / "axr_options.ltx").read_bytes(), b"written by the game")
+        self.assertEqual((play / "gamedata" / "configs" / "mcm.ltx").read_bytes(), b"written by the game")
+        self.assertEqual(len(warnings), 1)
+
+    def test_archives_are_skipped_without_a_place_for_them(self):
+        (self.folder / "fsgame.ltx").write_text("$game_data$ = true | true | $fs_root$ | gamedata\\\n")
+        self.addon("Archive", {"gamedata/a.ltx": b"a", "extra.db": b"db"})
+        play, warnings = standalone.compose_addons(self.mod)
+        self.assertEqual((play / "gamedata" / "a.ltx").read_bytes(), b"a")
+        self.assertEqual(len(warnings), 1)
+
+    def test_launching_from_the_play_folder(self):
+        with mock.patch.object(standalone, "_spawn") as spawn, \
+                mock.patch.object(standalone, "runner_at", lambda _s: standalone.Runner("Proton", self.tmp / "proton")):
+            touch(self.tmp / "proton" / "proton")
+            touch(self.mod.data_dir / "x")
+            standalone.launch(self.mod, self.mod.play_dir)
+        argv, kwargs = spawn.call_args.args[1], spawn.call_args.kwargs
+        self.assertEqual(argv[-1], str(self.mod.play_dir / "bin" / "AnomalyDX11AVX.exe"))
+        self.assertEqual(kwargs["cwd"], self.mod.play_dir)
+
+    def test_fsgame_folders(self):
+        self.assertEqual(standalone.fsgame_folder(self.folder, "$arch_dir_addons$"), "db/addons")
+        self.assertEqual(standalone.fsgame_folder(self.folder, "$app_data_root$"), "appdata")
+        self.assertIsNone(standalone.fsgame_folder(self.folder, "$arch_dir_patches$"))
+        (self.folder / "fsgame.ltx").write_text("$arch_dir_patches$ = false| true| ..\\outside\\\n"
+                                                "$game_data$ = true| true| C:\\games\\\n")
+        self.assertIsNone(standalone.fsgame_folder(self.folder, "$arch_dir_patches$"))
+        self.assertIsNone(standalone.fsgame_folder(self.folder, "$game_data$"))
 
 
 class StandaloneTests(unittest.TestCase):
